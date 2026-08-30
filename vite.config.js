@@ -9,6 +9,10 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     sourcemap: false,
+    // Alvo conservador: cobre iPhones com iOS 14 em diante.
+    // Sem isso, um Safari mais antigo não consegue nem ler o arquivo
+    // e a página fica em branco, sem nenhuma mensagem de erro.
+    target: ['es2019', 'safari14', 'chrome80', 'firefox78'],
     rollupOptions: {
       output: {
         manualChunks: {
