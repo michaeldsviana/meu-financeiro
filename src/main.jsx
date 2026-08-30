@@ -1,181 +1,510 @@
-/* =====================================================================
-   main.jsx — ponto de entrada, roteamento por hash, montagem do app
-   e captura de erros (para nunca mais cair em tela branca).
-   ===================================================================== */
-import React, { useCallback, useEffect, useState } from 'react'
-import ReactDOM from 'react-dom/client'
-import { AuthProvider, DataProvider, useAuth, useData } from './data'
-import { Button, Card, Layout, Loading, TransactionSheet } from './ui'
+import React, { StrictMode, createContext, useContext, useEffect, useMemo, useState } from 'react'
+import { createRoot } from 'react-dom/client'
+import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
+import { supabase } from './lib'
+import { DataProvider } from './data'
+import { Layout, Loading, Toast } from './ui'
 import {
-  Login, Dashboard, CashFlow, Transactions, Accounts, Cards, Investments,
-  Properties, Subscriptions, Health, Capital, Import, Settings
+  DashboardPage,
+  FlowPage,
+  TransactionsPage,
+  AccountsPage,
+  CardsPage,
+  InvestmentsPage,
+  PropertiesPage,
+  SubscriptionsPage,
+  HealthPage,
+  CapitalPage,
+  ImportPage,
+  SettingsPage
 } from './pages'
 import './styles.css'
 
-const PAGES = {
-  painel: Dashboard,
-  fluxo: CashFlow,
-  lancamentos: Transactions,
-  contas: Accounts,
-  cartoes: Cards,
-  investimentos: Investments,
-  imoveis: Properties,
-  assinaturas: Subscriptions,
-  saude: Health,
-  capital: Capital,
-  importar: Import,
-  ajustes: Settings
+const AuthContext = createContext(null)
+
+export function useAuth() {
+  return useContext(AuthContext)
 }
 
-/* -------------------------------------------------------------------
-   Tela de falha: mostra o erro em vez de deixar a página vazia.
-   ------------------------------------------------------------------- */
-function Failure({ title, detail, onReset }) {
+function AuthProvider({ children }) {
+  const [session, setSession] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [authError, setAuthError] = useState('')
+
+  useEffect(() => {
+    let mounted = true
+
+    async function loadSession() {
+      try {
+        const {
+          data: { session: currentSession },
+          error
+        } = await supabase.auth.getSession()
+
+        if (error) throw error
+
+        if (mounted) {
+          setSession(currentSession)
+          setLoading(false)
+        }
+      } catch (error) {
+        console.error('Erro ao recuperar sessão:', error)
+
+        if (mounted) {
+          setAuthError(
+            error?.message ||
+            'Não foi possível recuperar sua sessão.'
+          )
+          setLoading(false)
+        }
+      }
+    }
+
+    loadSession()
+
+    const {
+      data: { subscription }
+    } = supabase.auth.onAuthStateChange(
+      (_event, currentSession) => {
+        if (!mounted) return
+
+        setSession(currentSession)
+        setAuthError('')
+        setLoading(false)
+      }
+    )
+
+    return () => {
+      mounted = false
+      subscription?.unsubscribe()
+    }
+  }, [])
+
+  const value = useMemo(
+    () => ({
+      session,
+      loading,
+      authError,
+      signOut: async () => {
+        const { error } = await supabase.auth.signOut()
+
+        if (error) {
+          console.error('Erro ao sair:', error)
+          throw error
+        }
+
+        setSession(null)
+      }
+    }),
+    [session, loading, authError]
+  )
+
+  if (loading) {
+    return <Loading label="Verificando sessão" />
+  }
+
   return (
-    <main className="screen-center">
-      <div className="auth-card" style={{ margin: 16 }}>
-        <h2>{title}</h2>
-        <p className="hint">{detail}</p>
-        <div className="card-actions">
-          <button className="btn btn-solid btn-md" onClick={() => window.location.reload()}>
-            Recarregar
-          </button>
-          {onReset && (
-            <button className="btn btn-outline btn-md" onClick={onReset}>
-              Limpar sessão e recomeçar
-            </button>
-          )}
-        </div>
-      </div>
-    </main>
+    <AuthContext.Provider value={value}>
+      {children}
+    </AuthContext.Provider>
   )
 }
 
-class Boundary extends React.Component {
-  constructor(props) {
-    super(props)
-    this.state = { error: null }
+function LoginPage() {
+  const { session } = useAuth()
+  const navigate = useNavigate()
+
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [mode, setMode] = useState('login')
+  const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState('')
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    if (session) {
+      navigate('/painel', { replace: true })
+    }
+  }, [session, navigate])
+
+  async function submit(event) {
+    event.preventDefault()
+
+    setError('')
+    setMessage('')
+
+    if (!email.trim()) {
+      setError('Informe seu e-mail.')
+      return
+    }
+
+    if (!password) {
+      setError('Informe sua senha.')
+      return
+    }
+
+    setBusy(true)
+
+    try {
+      if (mode === 'login') {
+        const { data, error: loginError } =
+          await supabase.auth.signInWithPassword({
+            email: email.trim(),
+            password
+          })
+
+        if (loginError) throw loginError
+
+        if (!data?.session) {
+          throw new Error(
+            'Login realizado, mas nenhuma sessão foi criada.'
+          )
+        }
+
+        setMessage('Login realizado. Carregando seu financeiro...')
+      } else {
+        const { data, error: signUpError } =
+          await supabase.auth.signUp({
+            email: email.trim(),
+            password
+          })
+
+        if (signUpError) throw signUpError
+
+        if (data?.session) {
+          setMessage('Conta criada. Carregando seu financeiro...')
+        } else {
+          setMessage(
+            'Conta criada. Verifique seu e-mail para confirmar o cadastro.'
+          )
+        }
+      }
+    } catch (error) {
+      console.error('Erro de autenticação:', error)
+
+      setError(
+        error?.message ||
+        'Não foi possível concluir a autenticação.'
+      )
+    } finally {
+      setBusy(false)
+    }
   }
 
-  static getDerivedStateFromError(error) {
-    return { error }
+  async function resetPassword() {
+    setError('')
+    setMessage('')
+
+    if (!email.trim()) {
+      setError('Informe seu e-mail primeiro.')
+      return
+    }
+
+    setBusy(true)
+
+    try {
+      const redirectTo = `${window.location.origin}${window.location.pathname}`
+
+      const { error } = await supabase.auth.resetPasswordForEmail(
+        email.trim(),
+        {
+          redirectTo
+        }
+      )
+
+      if (error) throw error
+
+      setMessage(
+        'Enviamos as instruções de recuperação para seu e-mail.'
+      )
+    } catch (error) {
+      console.error('Erro ao recuperar senha:', error)
+
+      setError(
+        error?.message ||
+        'Não foi possível enviar a recuperação de senha.'
+      )
+    } finally {
+      setBusy(false)
+    }
   }
 
-  componentDidCatch(error, info) {
-    console.error('Falha na renderização:', error, info)
+  return (
+    <div className="auth-shell">
+      <div className="auth-card">
+        <div className="auth-brand">
+          <span className="mark">MF</span>
+
+          <div>
+            <b>Meu Financeiro</b>
+            <small>Controle financeiro pessoal</small>
+          </div>
+        </div>
+
+        <div className="auth-head">
+          <h1>
+            {mode === 'login'
+              ? 'Bem-vindo de volta'
+              : 'Criar sua conta'}
+          </h1>
+
+          <p>
+            {mode === 'login'
+              ? 'Entre para acessar seu painel financeiro.'
+              : 'Crie sua conta para começar.'}
+          </p>
+        </div>
+
+        <form className="auth-form" onSubmit={submit}>
+          <label className="field">
+            <span className="field-label">E-mail</span>
+
+            <input
+              className="input"
+              type="email"
+              autoComplete="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              placeholder="voce@email.com"
+              required
+            />
+          </label>
+
+          <label className="field">
+            <span className="field-label">Senha</span>
+
+            <input
+              className="input"
+              type="password"
+              autoComplete={
+                mode === 'login'
+                  ? 'current-password'
+                  : 'new-password'
+              }
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              placeholder="Sua senha"
+              required
+            />
+          </label>
+
+          {error && (
+            <div className="form-error">
+              {error}
+            </div>
+          )}
+
+          {message && (
+            <div className="form-success">
+              {message}
+            </div>
+          )}
+
+          <button
+            className="btn btn-solid btn-md"
+            type="submit"
+            disabled={busy}
+          >
+            {busy
+              ? 'Aguarde...'
+              : mode === 'login'
+                ? 'Entrar'
+                : 'Criar conta'}
+          </button>
+        </form>
+
+        {mode === 'login' && (
+          <button
+            className="auth-link"
+            type="button"
+            onClick={resetPassword}
+            disabled={busy}
+          >
+            Esqueci minha senha
+          </button>
+        )}
+
+        <div className="auth-switch">
+          <span>
+            {mode === 'login'
+              ? 'Ainda não possui uma conta?'
+              : 'Já possui uma conta?'}
+          </span>
+
+          <button
+            type="button"
+            onClick={() => {
+              setMode(
+                mode === 'login'
+                  ? 'signup'
+                  : 'login'
+              )
+              setError('')
+              setMessage('')
+            }}
+          >
+            {mode === 'login'
+              ? 'Criar conta'
+              : 'Entrar'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ProtectedRoute({ children }) {
+  const { session, loading } = useAuth()
+  const location = useLocation()
+
+  if (loading) {
+    return <Loading label="Carregando" />
   }
 
-  render() {
-    if (!this.state.error) return this.props.children
+  if (!session) {
     return (
-      <Failure
-        title="Algo quebrou ao desenhar a tela"
-        detail={String(this.state.error?.message || this.state.error)}
-        onReset={() => {
-          try { window.localStorage.clear() } catch { /* ignora */ }
-          window.location.hash = '#/painel'
-          window.location.reload()
-        }}
+      <Navigate
+        to="/login"
+        replace
+        state={{ from: location.pathname }}
       />
     )
   }
+
+  return children
 }
 
-/** Rotas por hash: funcionam no GitHub Pages sem configuração de servidor. */
-function useHashRoute() {
-  const read = () => {
-    const raw = window.location.hash.replace(/^#\/?/, '').split('?')[0]
-    return PAGES[raw] ? raw : 'painel'
+function AppShell() {
+  const { session } = useAuth()
+
+  if (!session) {
+    return <LoginPage />
   }
-  const [route, setRoute] = useState(read)
 
-  useEffect(() => {
-    const onChange = () => {
-      setRoute(read())
-      window.scrollTo(0, 0)
-    }
-    window.addEventListener('hashchange', onChange)
-    // O Supabase devolve o token no hash depois da confirmação de e-mail.
-    // Só assumimos a rota padrão quando o hash não é uma rota nossa.
-    const raw = window.location.hash.replace(/^#\/?/, '').split('?')[0]
-    if (!PAGES[raw]) window.location.replace('#/painel')
-    return () => window.removeEventListener('hashchange', onChange)
-  }, [])
-
-  const navigate = useCallback((path) => { window.location.hash = `#/${path}` }, [])
-  return [route, navigate]
-}
-
-function Workspace() {
-  const [route, navigate] = useHashRoute()
-  const [entryOpen, setEntryOpen] = useState(false)
-  const { status, error, reload } = useData()
-  const Page = PAGES[route] || Dashboard
-
-  return (
-    <Layout route={route} navigate={navigate} onNewEntry={() => setEntryOpen(true)}>
-      {status === 'loading' && <Loading label="Carregando seus dados" />}
-      {status === 'error' && (
-        <Card title="Não foi possível carregar">
-          <p>{error}</p>
-          <p className="hint">
-            Se a mensagem falar em tabela, coluna ou permissão, rode a migração
-            <code> 0002_full_system.sql </code> no SQL Editor do Supabase e tente de novo.
-          </p>
-          <div className="card-actions"><Button onClick={reload}>Tentar de novo</Button></div>
-        </Card>
-      )}
-      {status === 'ready' && <Boundary><Page navigate={navigate} /></Boundary>}
-      <TransactionSheet open={entryOpen} record={null} onClose={() => setEntryOpen(false)} />
-    </Layout>
-  )
-}
-
-function App() {
-  const { session, loading } = useAuth()
-  if (loading) return <div className="screen-center"><Loading label="Verificando sessão" /></div>
-  if (!session) return <Login />
   return (
     <DataProvider>
-      <Workspace />
+      <AppRoutes />
     </DataProvider>
   )
 }
 
-/* -------------------------------------------------------------------
-   Montagem, com verificação das variáveis e captura de erro precoce.
-   ------------------------------------------------------------------- */
-const container = document.getElementById('root')
-const root = ReactDOM.createRoot(container)
+function AppRoutes() {
+  const navigate = useNavigate()
+  const location = useLocation()
 
-const url = import.meta.env.VITE_SUPABASE_URL
-const key = import.meta.env.VITE_SUPABASE_ANON_KEY
+  const route =
+    location.pathname
+      .replace(/^\/+/, '')
+      .split('/')[0] ||
+    'painel'
 
-window.addEventListener('error', (e) => {
-  if (container.childElementCount === 0) {
-    container.innerHTML =
-      '<main class="screen-center"><div class="auth-card" style="margin:16px">' +
-      '<h2>Erro ao iniciar</h2><p class="hint">' +
-      String(e.message || 'sem mensagem') +
-      '</p></div></main>'
+  const validRoutes = [
+    'painel',
+    'fluxo',
+    'lancamentos',
+    'contas',
+    'cartoes',
+    'investimentos',
+    'imoveis',
+    'assinaturas',
+    'saude',
+    'capital',
+    'importar',
+    'ajustes'
+  ]
+
+  const currentRoute = validRoutes.includes(route)
+    ? route
+    : 'painel'
+
+  const [newEntryOpen, setNewEntryOpen] = useState(false)
+
+  function navigateTo(path) {
+    navigate(`/${path}`)
   }
-})
 
-if (!url || !key) {
-  root.render(
-    <Failure
-      title="Faltam as variáveis do Supabase"
-      detail="O site foi publicado sem VITE_SUPABASE_URL ou VITE_SUPABASE_ANON_KEY. Cadastre os dois secrets no GitHub e rode o workflow de novo."
-    />
-  )
-} else {
-  root.render(
-    <React.StrictMode>
-      <Boundary>
-        <AuthProvider>
-          <App />
-        </AuthProvider>
-      </Boundary>
-    </React.StrictMode>
+  return (
+    <Layout
+      route={currentRoute}
+      navigate={navigateTo}
+      onNewEntry={() => setNewEntryOpen(true)}
+    >
+      {currentRoute === 'painel' && <DashboardPage />}
+      {currentRoute === 'fluxo' && <FlowPage />}
+      {currentRoute === 'lancamentos' && <TransactionsPage />}
+      {currentRoute === 'contas' && <AccountsPage />}
+      {currentRoute === 'cartoes' && <CardsPage />}
+      {currentRoute === 'investimentos' && <InvestmentsPage />}
+      {currentRoute === 'imoveis' && <PropertiesPage />}
+      {currentRoute === 'assinaturas' && <SubscriptionsPage />}
+      {currentRoute === 'saude' && <HealthPage />}
+      {currentRoute === 'capital' && <CapitalPage />}
+      {currentRoute === 'importar' && <ImportPage />}
+      {currentRoute === 'ajustes' && <SettingsPage />}
+
+      {/* O formulário global de lançamento é aberto
+          pelo botão + da interface. */}
+      <GlobalTransactionModal
+        open={newEntryOpen}
+        onClose={() => setNewEntryOpen(false)}
+      />
+    </Layout>
   )
 }
+
+function GlobalTransactionModal({ open, onClose }) {
+  /*
+   * Importação dinâmica evita criar uma dependência circular
+   * entre main.jsx e ui.jsx durante a inicialização.
+   */
+  const [Component, setComponent] = useState(null)
+
+  useEffect(() => {
+    let active = true
+
+    if (!open) {
+      setComponent(null)
+      return undefined
+    }
+
+    import('./ui').then((module) => {
+      if (active) {
+        setComponent(() => module.TransactionSheet)
+      }
+    })
+
+    return () => {
+      active = false
+    }
+  }, [open])
+
+  if (!open || !Component) {
+    return null
+  }
+
+  return (
+    <Component
+      open={open}
+      record={null}
+      onClose={onClose}
+    />
+  )
+}
+
+function App() {
+  return (
+    <AuthProvider>
+      <AppShell />
+    </AuthProvider>
+  )
+}
+
+createRoot(document.getElementById('root')).render(
+  <StrictMode>
+    <BrowserRouter>
+      <Routes>
+        <Route path="*" element={<App />} />
+      </Routes>
+    </BrowserRouter>
+  </StrictMode>
+)
