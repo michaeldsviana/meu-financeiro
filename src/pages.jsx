@@ -1019,17 +1019,43 @@ export function Investments() {
     }
   }
 
-  /** Aporte também soma ao valor do investimento. */
+  /**
+   * Aporte também soma ao valor do investimento — e editar ou excluir um
+   * aporte precisa desfazer/ajustar esse valor, não só criar.
+   */
   async function saveAllocation(row) {
+    const previous = row.id ? allocations.find((a) => a.id === row.id) : null
     const inv = investments.find((i) => i.id === row.investment_id)
     const saved = await save('allocations', {
       ...row,
       objective_id: inv?.objective_id || null
     })
-    if (inv && !row.id) {
-      await save('investments', { ...inv, current_value: n(inv.current_value) + n(row.amount) }, { silent: true })
+    if (previous && previous.investment_id !== row.investment_id) {
+      // Aporte movido para outro investimento: desfaz no antigo, aplica no novo.
+      const prevInv = investments.find((i) => i.id === previous.investment_id)
+      if (prevInv) {
+        await save('investments',
+          { ...prevInv, current_value: n(prevInv.current_value) - n(previous.amount) }, { silent: true })
+      }
+      if (inv) {
+        await save('investments', { ...inv, current_value: n(inv.current_value) + n(row.amount) }, { silent: true })
+      }
+    } else if (inv) {
+      const delta = n(row.amount) - n(previous?.amount ?? 0)
+      if (delta !== 0) {
+        await save('investments', { ...inv, current_value: n(inv.current_value) + delta }, { silent: true })
+      }
     }
     return saved
+  }
+
+  /** Excluir um aporte precisa tirar o valor de volta do investimento. */
+  async function removeAllocation(row) {
+    await remove('allocations', row.id)
+    const inv = investments.find((i) => i.id === row.investment_id)
+    if (inv) {
+      await save('investments', { ...inv, current_value: n(inv.current_value) - n(row.amount) }, { silent: true })
+    }
   }
 
   return (
@@ -1170,7 +1196,7 @@ export function Investments() {
 
       <RecordSheet open={!!editingAllocation} title={editingAllocation?.id ? 'Editar aporte' : 'Novo aporte'}
         fields={allocationFields} record={editingAllocation} onClose={() => setEditingAllocation(null)}
-        onSave={saveAllocation} onDelete={(row) => remove('allocations', row.id)} />
+        onSave={saveAllocation} onDelete={removeAllocation} />
     </div>
   )
 }
