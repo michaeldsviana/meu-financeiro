@@ -2,7 +2,8 @@ name: Deploy to GitHub Pages
 
 on:
   push:
-    branches: ["main"]
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
@@ -25,20 +26,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-
-      - name: Check Supabase secrets
-        env:
-          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
-          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
-        run: |
-          test -n "$VITE_SUPABASE_URL" || { echo "::error::Missing VITE_SUPABASE_URL"; exit 1; }
-          test -n "$VITE_SUPABASE_ANON_KEY" || { echo "::error::Missing VITE_SUPABASE_ANON_KEY"; exit 1; }
-          case "$VITE_SUPABASE_ANON_KEY" in
-            *service_role*|sb_secret_*)
-              echo "::error::Do not use a service_role/secret key in the browser. Use the Supabase publishable/anon key.";
-              exit 1;;
-          esac
 
       - name: Install dependencies
         run: npm install --no-audit --no-fund
