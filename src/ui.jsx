@@ -433,6 +433,14 @@ export function RecordSheet({
       // Percentuais já chegam como fração (0,85% -> 0.0085) direto do campo.
       const payload = { ...form }
       delete payload.__rawPct
+      // Campos de dinheiro/percentual deixados em branco viram 0, não null:
+      // várias colunas correspondentes são NOT NULL no banco, e o motor
+      // financeiro já trata ausência como 0 (via n()), então não muda leitura.
+      fields.forEach((f) => {
+        if ((f.type === 'money' || f.type === 'percent') && (payload[f.name] === '' || payload[f.name] == null)) {
+          payload[f.name] = 0
+        }
+      })
       await onSave(payload)
       onClose()
     } catch (err) {
@@ -466,15 +474,21 @@ export function RecordSheet({
               )}
               {f.type === 'percent' && (
                 <Input
-                  type="number" step={f.step || '0.0001'} inputMode="decimal"
+                  type="text" inputMode="decimal"
                   placeholder={f.placeholder || '0,85'}
-                  value={value === '' ? '' : (form.__rawPct?.[f.name] ?? Number((n(value) * 100).toFixed(6)))}
+                  value={value === ''
+                    ? ''
+                    : (form.__rawPct?.[f.name] ?? String(Number((n(value) * 100).toFixed(6))).replace('.', ','))}
                   onChange={(e) => {
-                    const raw = e.target.value
+                    // Input livre em texto: aceita vírgula (padrão pt-BR) e ponto.
+                    // Um <input type="number"> nativo rejeita vírgula fora do locale
+                    // pt-BR do navegador e zera o valor sem avisar — daí o registro
+                    // ser salvo com a taxa vazia.
+                    const raw = cleanNumberInput(e.target.value)
                     setForm((prev) => ({
                       ...prev,
                       __rawPct: { ...(prev.__rawPct || {}), [f.name]: raw },
-                      [f.name]: raw === '' ? '' : n(raw) / 100
+                      [f.name]: raw === '' ? '' : parseMoney(raw) / 100
                     }))
                   }}
                   {...common}
