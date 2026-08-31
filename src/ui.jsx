@@ -251,8 +251,8 @@ const AXIS = { fontSize: 11, fill: 'var(--muted)' }
 const GRID = 'var(--line)'
 
 export const PALETTE = [
-  '#17604A', '#2B5B7E', '#B8791F', '#7A4A8C', '#A83232',
-  '#3F7A6B', '#8C6239', '#4A6FA5', '#6E8C3A', '#9A4C6B'
+  '#0F7A5A', '#0D3866', '#F59E0B', '#7C3AED', '#EF4444',
+  '#22C55E', '#3B82F6', '#0B5E46', '#B45309', '#DB2777'
 ]
 
 const shortMoney = (v) => money(v, { compact: true })
@@ -433,14 +433,6 @@ export function RecordSheet({
       // Percentuais já chegam como fração (0,85% -> 0.0085) direto do campo.
       const payload = { ...form }
       delete payload.__rawPct
-      // Campos de dinheiro/percentual deixados em branco viram 0, não null:
-      // várias colunas correspondentes são NOT NULL no banco, e o motor
-      // financeiro já trata ausência como 0 (via n()), então não muda leitura.
-      fields.forEach((f) => {
-        if ((f.type === 'money' || f.type === 'percent') && (payload[f.name] === '' || payload[f.name] == null)) {
-          payload[f.name] = 0
-        }
-      })
       await onSave(payload)
       onClose()
     } catch (err) {
@@ -474,21 +466,15 @@ export function RecordSheet({
               )}
               {f.type === 'percent' && (
                 <Input
-                  type="text" inputMode="decimal"
+                  type="number" step={f.step || '0.0001'} inputMode="decimal"
                   placeholder={f.placeholder || '0,85'}
-                  value={value === ''
-                    ? ''
-                    : (form.__rawPct?.[f.name] ?? String(Number((n(value) * 100).toFixed(6))).replace('.', ','))}
+                  value={value === '' ? '' : (form.__rawPct?.[f.name] ?? Number((n(value) * 100).toFixed(6)))}
                   onChange={(e) => {
-                    // Input livre em texto: aceita vírgula (padrão pt-BR) e ponto.
-                    // Um <input type="number"> nativo rejeita vírgula fora do locale
-                    // pt-BR do navegador e zera o valor sem avisar — daí o registro
-                    // ser salvo com a taxa vazia.
-                    const raw = cleanNumberInput(e.target.value)
+                    const raw = e.target.value
                     setForm((prev) => ({
                       ...prev,
                       __rawPct: { ...(prev.__rawPct || {}), [f.name]: raw },
-                      [f.name]: raw === '' ? '' : parseMoney(raw) / 100
+                      [f.name]: raw === '' ? '' : n(raw) / 100
                     }))
                   }}
                   {...common}
@@ -763,7 +749,7 @@ export function Layout({ route, navigate, onNewEntry, children }) {
     <div className="shell">
       <aside className="rail">
         <div className="rail-brand">
-          <span className="mark">MF</span>
+          <img className="mark" src="./icon-192.png" alt="Meu Financeiro" width="44" height="44" />
           <div>
             <b>Meu Financeiro</b>
             <small>{session?.user?.email}</small>
