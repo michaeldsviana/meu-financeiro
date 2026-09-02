@@ -152,13 +152,12 @@ const url = import.meta.env.VITE_SUPABASE_URL
 const key = import.meta.env.VITE_SUPABASE_ANON_KEY
 
 window.addEventListener('error', (e) => {
-  if (container.childElementCount === 0) {
-    container.innerHTML =
-      '<main class="screen-center"><div class="auth-card" style="margin:16px">' +
-      '<h2>Erro ao iniciar</h2><p class="hint">' +
-      String(e.message || 'sem mensagem') +
-      '</p></div></main>'
-  }
+  if (container.childElementCount === 0) return
+  const box = document.getElementById('boot-error')
+  if (!box) return
+  // textContent, nunca innerHTML: a mensagem de erro não é confiável.
+  box.style.display = 'block'
+  box.textContent = String(e.message || 'sem mensagem')
 })
 
 if (!url || !key) {
