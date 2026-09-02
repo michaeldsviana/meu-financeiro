@@ -1128,5 +1128,8 @@ export function friendlyError(error) {
   if (/Failed to fetch|NetworkError/i.test(msg)) return 'Sem conexão com o servidor. Tente de novo.'
   if (/relation .* does not exist/i.test(msg)) return 'Tabela ausente no banco. Rode a migração 0002 no Supabase.'
   if (/column .* does not exist/i.test(msg)) return 'Coluna ausente no banco. Rode a migração 0002 no Supabase.'
-  return msg
+  if (/permission denied|not authorized/i.test(msg)) return 'Sem permissão para esta operação.'
+  // Mensagem crua do Postgres pode revelar estrutura do banco. Vai só para o console.
+  console.warn('Erro não mapeado:', msg)
+  return 'Não foi possível concluir. Tente de novo em instantes.'
 }
