@@ -1,119 +1,157 @@
 -- =====================================================================
--- 0003 — ENDURECIMENTO DE SEGURANÇA
+-- 0003 — ENDURECIMENTO DE SEGURANÇA  (versão 2)
 --
--- Corrige achados da auditoria de defaults inseguros.
--- Aditiva e idempotente: pode ser executada mais de uma vez.
+-- A versão 1 abortava ao encontrar tabela sem RLS. Abortar é seguro,
+-- mas não conserta: como a transação inteira volta atrás, nenhuma das
+-- outras correções chega a ser aplicada, e a exposição continua.
+--
+-- Esta versão falha fechada em vez de falhar parada: qualquer tabela
+-- sem RLS tem o acesso REVOGADO em vez de bloquear o script. Revogar
+-- não apaga dado nenhum e não quebra o app, que consulta apenas as 18
+-- tabelas listadas na seção 4.
+--
+-- Só interrompe se faltar RLS numa tabela que o app realmente usa —
+-- aí sim é erro que exige decisão humana.
+--
+-- Aditiva e idempotente.
 -- =====================================================================
 
 -- ---------------------------------------------------------------------
--- ACHADO 1 (alto) — seed_defaults era chamável por qualquer um.
+-- 1. Funções internas não podem ser chamadas de fora
 --
--- A função é SECURITY DEFINER, então roda como dona do banco e ignora o
--- RLS. Ela recebe o uid como PARÂMETRO, e no Postgres toda função nasce
--- com EXECUTE concedido a PUBLIC. O resultado: qualquer pessoa com a
--- chave publishable — que é pública, está no site — podia chamar
--- POST /rest/v1/rpc/seed_defaults {"uid":"<uuid de outra pessoa>"}
--- e gravar linhas na conta alheia. E, como o uid tem chave estrangeira
--- para auth.users, a diferença entre sucesso e erro revelava se um
--- identificador de usuário existe.
+-- seed_defaults é SECURITY DEFINER e recebe o uid como parâmetro. Como
+-- toda função no Postgres nasce com EXECUTE para PUBLIC, ela estava
+-- exposta na API: dava para gravar na conta de outra pessoa e usar o
+-- erro de chave estrangeira para descobrir identificadores válidos.
 --
--- Correção: tirar o EXECUTE de todo mundo. ensure_defaults() e
--- handle_new_user() continuam funcionando porque também são SECURITY
--- DEFINER e rodam como a dona, que mantém o privilégio.
+-- ensure_defaults() continua chamando seed_defaults normalmente, porque
+-- também é SECURITY DEFINER e executa como a dona do banco.
 -- ---------------------------------------------------------------------
-revoke all on function public.seed_defaults(uuid) from public;
-revoke all on function public.seed_defaults(uuid) from anon;
-revoke all on function public.seed_defaults(uuid) from authenticated;
+do $$
+declare f record;
+begin
+  for f in
+    select p.oid::regprocedure as assinatura
+    from pg_proc p
+    join pg_namespace ns on ns.oid = p.pronamespace
+    where ns.nspname = 'public'
+      and p.proname in ('seed_defaults', 'handle_new_user', 'touch_updated_at')
+  loop
+    execute format('revoke all on function %s from public',        f.assinatura);
+    execute format('revoke all on function %s from anon',          f.assinatura);
+    execute format('revoke all on function %s from authenticated', f.assinatura);
+  end loop;
+end $$;
 
-revoke all on function public.handle_new_user() from public;
-revoke all on function public.handle_new_user() from anon;
-revoke all on function public.handle_new_user() from authenticated;
-
-revoke all on function public.touch_updated_at() from public;
-revoke all on function public.touch_updated_at() from anon;
-revoke all on function public.touch_updated_at() from authenticated;
-
--- ensure_defaults() é a porta legítima: não aceita parâmetro, usa
--- auth.uid() e recusa sessão nula. Só quem está autenticado entra.
-revoke all on function public.ensure_defaults() from public;
-revoke all on function public.ensure_defaults() from anon;
-grant execute on function public.ensure_defaults() to authenticated;
+-- A porta legítima: sem parâmetro, usa auth.uid(), recusa sessão nula.
+do $$
+begin
+  if exists (
+    select 1 from pg_proc p join pg_namespace ns on ns.oid = p.pronamespace
+    where ns.nspname = 'public' and p.proname = 'ensure_defaults'
+  ) then
+    revoke all on function public.ensure_defaults() from public;
+    revoke all on function public.ensure_defaults() from anon;
+    grant execute on function public.ensure_defaults() to authenticated;
+  end if;
+end $$;
 
 -- ---------------------------------------------------------------------
--- ACHADO 2 (médio) — o papel anon não deve enxergar o schema.
+-- 2. O papel anon não precisa de nada
 --
--- Nenhuma tela funciona sem login. Retirar o acesso do anon fecha a
--- porta antes do RLS, em vez de depender só dele.
+-- Nenhuma tela funciona sem login. Tirar o acesso do anon fecha a porta
+-- antes do RLS, em vez de depender só dele. O login continua funcionando:
+-- a autenticação passa pelo schema auth, não pelo public.
 -- ---------------------------------------------------------------------
 revoke all on all tables in schema public from anon;
 revoke usage on schema public from anon;
 
 -- ---------------------------------------------------------------------
--- ACHADO 3 (médio) — grant coletivo era inseguro para o futuro.
+-- 3. Tabela sem RLS perde o acesso, em vez de parar o script
 --
--- A migração 0002 concedeu acesso a "all tables in schema public". Isso
--- resolveu o presente, mas qualquer tabela criada depois entrava sem
--- RLS e já nascia legível por todos os usuários autenticados.
---
--- Correção: default privileges que valem só para tabelas futuras, e uma
--- verificação que ACUSA qualquer tabela sem RLS em vez de deixar passar.
+-- Nada é apagado. Se depois se confirmar que a tabela é necessária,
+-- basta habilitar o RLS, criar a política e conceder de novo.
 -- ---------------------------------------------------------------------
 do $$
-declare faltando text;
+declare t record;
+declare tratadas text := '';
 begin
-  select string_agg(c.relname, ', ' order by c.relname)
-    into faltando
-  from pg_class c
-  join pg_namespace ns on ns.oid = c.relnamespace
-  where ns.nspname = 'public'
-    and c.relkind = 'r'
-    and not c.relrowsecurity;
+  for t in
+    select c.relname, c.oid
+    from pg_class c
+    join pg_namespace ns on ns.oid = c.relnamespace
+    where ns.nspname = 'public'
+      and c.relkind = 'r'
+      and not c.relrowsecurity
+  loop
+    execute format('revoke all on public.%I from anon', t.relname);
+    execute format('revoke all on public.%I from authenticated', t.relname);
+    tratadas := tratadas || t.relname || ', ';
+  end loop;
 
-  if faltando is not null then
-    raise exception 'Tabelas sem RLS em public: %. Habilite antes de continuar.', faltando;
-  end if;
-end $$;
-
-do $$
-declare sem_politica text;
-begin
-  select string_agg(c.relname, ', ' order by c.relname)
-    into sem_politica
-  from pg_class c
-  join pg_namespace ns on ns.oid = c.relnamespace
-  where ns.nspname = 'public'
-    and c.relkind = 'r'
-    and not exists (
-      select 1 from pg_policies p
-      where p.schemaname = 'public' and p.tablename = c.relname
-    );
-
-  if sem_politica is not null then
-    raise exception 'Tabelas com RLS mas sem política: %.', sem_politica;
+  if tratadas <> '' then
+    raise notice 'Sem RLS, acesso revogado (dados preservados): %',
+      rtrim(tratadas, ', ');
+  else
+    raise notice 'Todas as tabelas de public tem RLS ativo.';
   end if;
 end $$;
 
 -- ---------------------------------------------------------------------
--- Fecha o buraco para o futuro: tabelas criadas daqui em diante não
--- recebem acesso automático. Quem criar terá que conceder de propósito,
--- depois de habilitar o RLS.
+-- 4. As tabelas que o app usa são inegociáveis
+--
+-- Esta é a única condição que interrompe o script. Se uma delas estiver
+-- sem RLS ou sem política, o app está expondo dado de verdade e a
+-- decisão precisa ser sua.
 -- ---------------------------------------------------------------------
-alter default privileges in schema public revoke all on tables from anon;
-alter default privileges in schema public revoke all on tables from authenticated;
+do $$
+declare problema text;
+begin
+  select string_agg(t.nome, ', ' order by t.nome) into problema
+  from (
+    select unnest(array[
+      'bank_accounts','credit_cards','categories','objectives','investments',
+      'investment_allocations','investment_interest','transactions','properties',
+      'property_obligations','liabilities','subscriptions','health_costs',
+      'capital_costs','reconciliations','import_batches','import_rules',
+      'net_worth_snapshots','settings','profiles'
+    ]) as nome
+  ) t
+  join pg_class c on c.relname = t.nome
+  join pg_namespace ns on ns.oid = c.relnamespace and ns.nspname = 'public'
+  where not c.relrowsecurity
+     or not exists (
+       select 1 from pg_policies p
+       where p.schemaname = 'public' and p.tablename = t.nome
+     );
+
+  if problema is not null then
+    raise exception 'Tabela usada pelo app sem RLS ou sem politica: %', problema;
+  end if;
+end $$;
+
+-- ---------------------------------------------------------------------
+-- 5. Fecha o futuro
+--
+-- Tabela criada daqui em diante não recebe acesso automático. Quem criar
+-- precisa habilitar o RLS e conceder de propósito.
+-- ---------------------------------------------------------------------
+alter default privileges in schema public revoke all on tables    from anon;
+alter default privileges in schema public revoke all on tables    from authenticated;
 alter default privileges in schema public revoke all on functions from public;
 alter default privileges in schema public revoke all on functions from anon;
 
 -- ---------------------------------------------------------------------
--- Relatório final: o que ficou exposto e para quem.
+-- 6. Estado final: o que ficou exposto, e para quem
 -- ---------------------------------------------------------------------
 select
-  c.relname                                as tabela,
-  c.relrowsecurity                         as rls_ativo,
+  c.relname                                             as tabela,
+  c.relrowsecurity                                      as rls_ativo,
   (select count(*) from pg_policies p
-    where p.schemaname = 'public' and p.tablename = c.relname) as politicas,
-  has_table_privilege('anon', c.oid, 'SELECT')          as anon_le,
+     where p.schemaname = 'public' and p.tablename = c.relname) as politicas,
+  has_table_privilege('anon',          c.oid, 'SELECT') as anon_le,
   has_table_privilege('authenticated', c.oid, 'SELECT') as autenticado_le
 from pg_class c
 join pg_namespace ns on ns.oid = c.relnamespace
 where ns.nspname = 'public' and c.relkind = 'r'
-order by c.relname;
+order by c.relrowsecurity, c.relname;
