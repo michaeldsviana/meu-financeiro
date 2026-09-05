@@ -383,15 +383,77 @@ export function pendingInterest(investments, interestRows, key) {
 // Compromissos recorrentes
 // ---------------------------------------------------------------------
 /** Todos os compromissos previstos que caem num mês, com origem identificada. */
+/**
+ * Um compromisso cadastrado (assinatura, condomínio, parcela) e o lançamento
+ * correspondente no razão são a mesma despesa vista de dois ângulos. Sem
+ * casar os dois, o mês soma tudo em dobro.
+ *
+ * O casamento é deliberadamente conservador: exige valor igual e mais um
+ * ponto de contato — mesma categoria, mesmo cartão, mesma conta ou o nome
+ * aparecendo na descrição. Na dúvida, considera NÃO casado, o que faz o
+ * sistema prever gasto a mais em vez de esconder gasto.
+ */
+export function settledCommitment(commitment, transactions, key) {
+  const alvo = Math.abs(n(commitment.amount))
+  if (alvo === 0) return null
+  const nome = normalize(commitment.name || '')
+
+  return transactions.find((t) => {
+    if (txMonth(t) !== key) return false
+    if (t.kind !== 'expense' && t.kind !== 'card_payment') return false
+    if (Math.abs(Math.abs(n(t.amount)) - alvo) > 0.01) return false
+
+    const mesmaCategoria = commitment.category_id && t.category_id === commitment.category_id
+    const mesmoCartao = commitment.card_id && t.card_id === commitment.card_id
+    const mesmaConta = commitment.bank_account_id && t.bank_account_id === commitment.bank_account_id
+    const descricaoBate = nome.length > 3 && normalize(t.description || '').includes(nome.split(' ')[0])
+
+    return Boolean(mesmaCategoria || mesmoCartao || mesmaConta || descricaoBate)
+  }) || null
+}
+
+/**
+ * Visão consolidada de um mês: o que já passou pelo razão, o que está
+ * cadastrado como recorrente e ainda não apareceu, e o total esperado.
+ *
+ * É o número que responde "quanto este mês vai custar", em vez de
+ * "quanto eu já registrei".
+ */
+export function monthOverview(data, key) {
+  const flow = flowForMonth(data.transactions, key)
+  const commitments = commitmentsForMonth(data, key).map((c) => {
+    const match = settledCommitment(c, data.transactions, key)
+    return { ...c, settled: Boolean(match), transaction_id: match?.id || null }
+  })
+
+  const pendentes = commitments.filter((c) => !c.settled)
+  const aPagar = sum(pendentes, (c) => c.amount)
+
+  return {
+    ...flow,
+    commitments,
+    pendentes,
+    lancado: flow.expense,
+    aPagar,
+    totalEsperado: flow.expense + aPagar,
+    resultadoEsperado: flow.income - flow.expense - aPagar,
+    cobertura: commitments.length ? (commitments.length - pendentes.length) / commitments.length : 1
+  }
+}
+
 export function commitmentsForMonth(data, key) {
   const items = []
 
   data.subscriptions
     .filter((s) => s.active !== false)
     .forEach((s) => {
+      const freq = s.frequency || 'monthly'
       const base = s.next_billing_date || s.started_on || `${key}-01`
-      const hits = occurrencesIn(base, s.frequency || 'monthly', [key])
-      if (hits.length || (s.frequency || 'monthly') === 'monthly') {
+      // Uma assinatura não pode gerar compromisso em mês anterior ao seu início.
+      const startKey = monthKey(s.started_on || s.next_billing_date || `${key}-01`)
+      if (monthsBetween(startKey, key) < 0) return
+      const hits = occurrencesIn(base, freq, [key])
+      if (hits.length || freq === 'monthly') {
         items.push({
           id: `sub-${s.id}`, source: 'Assinatura', name: s.name,
           amount: n(s.monthly_amount), date: dueDateInMonth(key, s.billing_day),
@@ -429,21 +491,44 @@ export function commitmentsForMonth(data, key) {
       })
     })
 
-  data.healthCosts
-    .filter((h) => !h.paid && monthKey(h.reference_month) === key)
-    .forEach((h) => items.push({
-      id: `hea-${h.id}`, source: 'Saúde', name: h.description,
-      amount: n(h.amount), date: h.due_date || h.reference_month,
-      bank_account_id: h.bank_account_id, category_id: h.category_id
-    }))
+  /*
+   * Saúde e capital: o registro vale no mês de competência dele. Se estiver
+   * marcado como recorrente, ele também projeta os meses seguintes — mas só
+   * enquanto não existir um registro próprio daquele mês, para o lançamento
+   * real substituir a projeção em vez de somar em cima dela.
+   */
+  const periodicos = (rows, source, label) => {
+    rows.forEach((r) => {
+      const ref = monthKey(r.reference_month)
+      const offset = monthsBetween(ref, key)
+      if (offset < 0) return
 
-  data.capitalCosts
-    .filter((c) => !c.paid && monthKey(c.reference_month) === key)
-    .forEach((c) => items.push({
-      id: `cap-${c.id}`, source: 'Capital', name: c.description,
-      amount: n(c.amount), date: c.due_date || c.reference_month,
-      bank_account_id: c.bank_account_id, category_id: c.category_id
-    }))
+      if (offset === 0) {
+        if (r.paid) return
+      } else {
+        if (!r.recurring) return
+        const jaExiste = rows.some((o) =>
+          o.id !== r.id &&
+          monthKey(o.reference_month) === key &&
+          normalize(o.description || '') === normalize(r.description || ''))
+        if (jaExiste) return
+      }
+
+      items.push({
+        id: `${label}-${r.id}${offset ? `-${key}` : ''}`,
+        source,
+        name: r.description,
+        amount: n(r.amount),
+        date: offset === 0 ? (r.due_date || r.reference_month) : dueDateInMonth(key, r.due_date ? toDate(r.due_date).getDate() : 10),
+        projected: offset > 0,
+        bank_account_id: r.bank_account_id,
+        category_id: r.category_id
+      })
+    })
+  }
+
+  periodicos(data.healthCosts, 'Saúde', 'hea')
+  periodicos(data.capitalCosts, 'Capital', 'cap')
 
   return items.sort((a, b) => String(a.date).localeCompare(String(b.date)))
 }
@@ -500,11 +585,42 @@ export function baseline(transactions, monthsBack = 3, reference = currentMonth(
  * A despesa variável estimada é a média histórica descontada dos compromissos,
  * para não contar o mesmo gasto duas vezes.
  */
+/**
+ * Média da despesa que NÃO é recorrente conhecida.
+ *
+ * A versão anterior fazia "média histórica menos compromissos cadastrados".
+ * O problema: ela presumia que todo compromisso já estava dentro da média.
+ * Quem cadastrasse o financiamento e o plano de saúde sem nunca tê-los
+ * lançado via a subtração zerar o mercado, e a previsão passava a supor
+ * que não se gasta nada além das contas fixas.
+ *
+ * Agora a conta é feita mês a mês: do total gasto, tira-se apenas o que
+ * casou com um compromisso naquele mês. O que sobra é gasto variável de
+ * verdade. Se o recorrente nunca apareceu no razão, ele não é descontado
+ * de nada — e continua sendo somado à parte.
+ */
+export function variableBaseline(data, monthsBack = 3, reference = currentMonth()) {
+  const keys = monthRange(addMonths(reference, -monthsBack), monthsBack)
+  const amostras = []
+
+  keys.forEach((k) => {
+    const flow = flowForMonth(data.transactions, k)
+    if (flow.income === 0 && flow.expense === 0) return
+    const casados = sum(
+      commitmentsForMonth(data, k).filter((c) => settledCommitment(c, data.transactions, k)),
+      (c) => c.amount
+    )
+    amostras.push(Math.max(0, flow.expense - casados))
+  })
+
+  if (!amostras.length) return { expense: 0, months: 0 }
+  return { expense: sum(amostras, (v) => v) / amostras.length, months: amostras.length }
+}
+
 export function cashProjection(data, { from = currentMonth(), horizon = 12 } = {}) {
   const months = monthRange(from, horizon)
   const base = baseline(data.transactions, 3, from)
-  const currentCommitments = sum(commitmentsForMonth(data, from), (c) => c.amount)
-  const variableEstimate = Math.max(0, base.expense - currentCommitments)
+  const variableEstimate = variableBaseline(data, 3, from).expense
 
   let balance = totalCash(data.accounts)
   const nowKey = currentMonth()
@@ -526,11 +642,16 @@ export function cashProjection(data, { from = currentMonth(), horizon = 12 } = {
       expense = realized.expense + realized.invested
       mode = 'realizado'
     } else if (isCurrent) {
-      // No mês corrente: o que já aconteceu + o que ainda falta.
-      const remainingCommitments = commitments.filter((c) => (c.date || '') >= (data.today || ''))
+      /*
+       * Mês corrente: o que já passou pelo razão, mais os compromissos que
+       * ainda não apareceram nele. Antes havia um fator de 0,6 aqui, um chute
+       * para compensar a chance de o compromisso já estar entre as despesas
+       * lançadas. Agora cada compromisso é casado com o lançamento
+       * correspondente, então não há mais o que adivinhar.
+       */
+      const pendentes = commitments.filter((c) => !settledCommitment(c, data.transactions, key))
       income = Math.max(realized.income, realized.income + realized.plannedIncome)
-      expense = realized.expense + realized.invested +
-        sum(remainingCommitments, (c) => c.amount) * (realized.expense > 0 ? 0.6 : 1)
+      expense = realized.expense + realized.invested + sum(pendentes, (c) => c.amount)
       mode = 'em curso'
     } else {
       income = realized.plannedIncome > 0 ? realized.plannedIncome : base.income
