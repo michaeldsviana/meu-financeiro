@@ -736,6 +736,21 @@ export const NAV = [
 
 const MONTH_PAGES = ['painel', 'fluxo', 'lancamentos', 'cartoes', 'saude', 'capital']
 
+/**
+ * Identificação do usuário, presente em todas as guias.
+ * No celular mostra só a foto; a partir do tablet, foto e primeiro nome.
+ */
+export function ProfileChip() {
+  const { profile } = useData()
+  const { session } = useAuth()
+  const foto = useAvatar()
+  const nome = profile?.full_name || session?.user?.email?.split('@')[0] || 'Você'
+
+  return foto
+    ? <img className="chip-avatar" src={foto} alt="" />
+    : <span className="chip-avatar chip-avatar-empty">{initials(nome)}</span>
+}
+
 /** A foto vive num bucket privado, então cada exibição pede uma URL assinada. */
 function useAvatar() {
   const { profile } = useData()
@@ -758,6 +773,12 @@ export function Layout({ route, navigate, onNewEntry, children }) {
   const active = NAV.find((i) => i.path === route)
   const avatar = useAvatar()
   const { profile } = useData()
+  const nomeUsuario = profile?.full_name || session?.user?.email?.split('@')[0] || 'Você'
+  // Sem nome cadastrado, o prefixo do e-mail em caixa alta fica feio.
+  // Nesse caso a etiqueta convida a preencher o perfil.
+  const primeiroNome = profile?.full_name
+    ? profile.full_name.trim().split(' ')[0]
+    : 'Seu perfil'
 
   const go = (path) => { navigate(path); setMoreOpen(false) }
 
@@ -791,10 +812,17 @@ export function Layout({ route, navigate, onNewEntry, children }) {
 
       <div className="main">
         <header className="topbar">
-          <div className="topbar-title">
-            <span className="eyebrow">Meu Financeiro</span>
-            <h1>{active?.label || 'Painel'}</h1>
-          </div>
+          <button
+            className={`topbar-title ${route === 'perfil' ? 'on' : ''}`}
+            onClick={() => go('perfil')}
+            aria-label={`Perfil de ${nomeUsuario}`}
+          >
+            <ProfileChip />
+            <span className="topbar-text">
+              <span className="eyebrow">{primeiroNome}</span>
+              <h1>{active?.label || 'Painel'}</h1>
+            </span>
+          </button>
 
           <div className="topbar-tools">
             {showMonth && (
@@ -845,6 +873,19 @@ export function Layout({ route, navigate, onNewEntry, children }) {
       </button>
 
       <Sheet open={moreOpen} title="Seções" onClose={() => setMoreOpen(false)}>
+        <button className="more-profile" onClick={() => go('perfil')}>
+          {avatar
+            ? <img className="more-avatar" src={avatar} alt="" />
+            : <span className="more-avatar more-avatar-empty">
+                {initials(profile?.full_name || session?.user?.email || 'Você')}
+              </span>}
+          <span className="more-profile-id">
+            <b>{profile?.full_name || session?.user?.email?.split('@')[0] || 'Seu perfil'}</b>
+            <small>{session?.user?.email}</small>
+          </span>
+          <ChevronRight size={18} />
+        </button>
+
         <div className="more-grid">
           {NAV.map((item) => (
             <button key={item.path} className={route === item.path ? 'on' : ''} onClick={() => go(item.path)}>
