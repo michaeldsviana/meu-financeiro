@@ -1,10 +1,10 @@
 /* =====================================================================
    ui.jsx — primitivas de interface, gráficos, formulários e a casca.
    ===================================================================== */
-import { AlertTriangle, Banknote, Building2, Check, ChevronDown, ChevronLeft, ChevronRight, CreditCard, Eye, EyeOff, Gauge, HeartPulse, LayoutGrid, ListPlus, Loader2, LogOut, Percent, Plus, Receipt, RefreshCw, Repeat, Settings as SettingsIcon, Target, Upload, X } from 'lucide-react'
+import { AlertTriangle, Banknote, Building2, Check, ChevronDown, ChevronLeft, ChevronRight, CreditCard, Eye, EyeOff, Gauge, HeartPulse, LayoutGrid, ListPlus, Loader2, LogOut, Percent, Plus, Receipt, RefreshCw, Repeat, Settings as SettingsIcon, Target, Upload, UserRound, X } from 'lucide-react'
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, ComposedChart, Legend, Line, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
-import { money, money as fmtMoney, SETTLED, TABLES, accountLedgerBalance, accountsOverview, addMonths, applyFilters, baseline, cardInvoice, cardLedgerDebt, cardsOverview, cashProjection, categorize, cleanNumberInput, commitmentsForMonth, currentMonth, dayLabel, decimal, defaultHints, deleteRow, dueDateInMonth, ensureDefaults, fetchSettings, fetchTable, fingerprint, flowForMonth, flowSeries, friendlyError, fullDate, groupByCategory, initials, insertMany, insertRow, iso, monthEnd, monthKey, monthLabel, monthRange, monthStart, monthlyRateOf, monthsBetween, n, netWorth, nextOccurrence, normalize, objectivesOverview, occurrencesIn, parseCsv, parseMoney, parseOfx, parseStatement, parseStatementDate, pendingInterest, percent, projectInvestments, reservePlan, saveRow, saveSettings, suggestPattern, sum, supabase, toDate, today, totalCardDebt, totalCash, totalInvested, txMonth, updateRow, withOccurrenceIndex } from './lib'
+import { money, money as fmtMoney, avatarUrl, SETTLED, TABLES, accountLedgerBalance, accountsOverview, addMonths, applyFilters, baseline, cardInvoice, cardLedgerDebt, cardsOverview, cashProjection, categorize, cleanNumberInput, commitmentsForMonth, currentMonth, dayLabel, decimal, defaultHints, deleteRow, dueDateInMonth, ensureDefaults, fetchSettings, fetchTable, fingerprint, flowForMonth, flowSeries, friendlyError, fullDate, groupByCategory, initials, insertMany, insertRow, iso, monthEnd, monthKey, monthLabel, monthRange, monthStart, monthlyRateOf, monthsBetween, n, netWorth, nextOccurrence, normalize, objectivesOverview, occurrencesIn, parseCsv, parseMoney, parseOfx, parseStatement, parseStatementDate, pendingInterest, percent, projectInvestments, reservePlan, saveRow, saveSettings, suggestPattern, sum, supabase, toDate, today, totalCardDebt, totalCash, totalInvested, txMonth, updateRow, withOccurrenceIndex } from './lib'
 import { useAuth, useData, useLookup } from './data'
 
 /* ---------- ui ---------- */
@@ -730,10 +730,24 @@ export const NAV = [
   { path: 'saude', label: 'Saúde', icon: HeartPulse },
   { path: 'capital', label: 'Custos de capital', icon: Percent },
   { path: 'importar', label: 'Importar extratos', icon: Upload },
-  { path: 'ajustes', label: 'Ajustes', icon: SettingsIcon }
+  { path: 'ajustes', label: 'Ajustes', icon: SettingsIcon },
+  { path: 'perfil', label: 'Perfil', icon: UserRound }
 ]
 
 const MONTH_PAGES = ['painel', 'fluxo', 'lancamentos', 'cartoes', 'saude', 'capital']
+
+/** A foto vive num bucket privado, então cada exibição pede uma URL assinada. */
+function useAvatar() {
+  const { profile } = useData()
+  const [url, setUrl] = useState(null)
+  useEffect(() => {
+    let vivo = true
+    if (!profile?.avatar_url) { setUrl(null); return }
+    avatarUrl(profile.avatar_url).then((u) => { if (vivo) setUrl(u) })
+    return () => { vivo = false }
+  }, [profile?.avatar_url])
+  return url
+}
 
 export function Layout({ route, navigate, onNewEntry, children }) {
   const { month, setMonth, reload, toast, settings, updateSettings } = useData()
@@ -742,19 +756,23 @@ export function Layout({ route, navigate, onNewEntry, children }) {
   const showMonth = MONTH_PAGES.includes(route)
   const hide = !!settings?.hide_values
   const active = NAV.find((i) => i.path === route)
+  const avatar = useAvatar()
+  const { profile } = useData()
 
   const go = (path) => { navigate(path); setMoreOpen(false) }
 
   return (
     <div className="shell">
       <aside className="rail">
-        <div className="rail-brand">
-          <img className="mark" src="./icon-192.png" alt="Meu Financeiro" width="44" height="44" />
+        <button className="rail-brand rail-brand-btn" onClick={() => go('perfil')}>
+          {avatar
+            ? <img className="mark avatar-mini" src={avatar} alt="Seu perfil" />
+            : <img className="mark" src="./icon-192.png" alt="Meu Financeiro" width="44" height="44" />}
           <div>
-            <b>Meu Financeiro</b>
+            <b>{profile?.full_name || 'Meu Financeiro'}</b>
             <small>{session?.user?.email}</small>
           </div>
-        </div>
+        </button>
         <nav>
           {NAV.map((item) => (
             <button
