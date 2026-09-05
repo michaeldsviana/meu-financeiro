@@ -931,3 +931,10 @@ textarea.input { resize: vertical; line-height: 20px; }
   .avatar { width: 96px; height: 96px; }
   .avatar-empty { font-size: 32px; }
 }
+
+/* Campo de senha da fatura protegida */
+.pdf-senha {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  width: 100%; margin-top: 8px;
+}
+.pdf-senha .input { flex: 1 1 160px; padding: 9px 12px; }
