@@ -1238,6 +1238,89 @@ export async function ensureDefaults() {
   }
 }
 
+/* ---------- perfil do usuário ---------- */
+
+/** Lê o perfil, criando a linha se ela ainda não existir. */
+export async function fetchProfile(uid) {
+  if (!uid) return null
+  const { data, error } = await supabase
+    .from('profiles').select('*').eq('id', uid).maybeSingle()
+  if (error) throw error
+  if (data) return data
+
+  const { data: novo, error: erroInsert } = await supabase
+    .from('profiles').insert({ id: uid }).select().single()
+  if (erroInsert) throw erroInsert
+  return novo
+}
+
+export async function saveProfile(uid, patch) {
+  const { data, error } = await supabase
+    .from('profiles')
+    .update(stripped(patch))
+    .eq('id', uid)
+    .select()
+    .single()
+  if (error) throw error
+  return data
+}
+
+/**
+ * Envia a foto para o bucket privado, numa pasta com o identificador do
+ * usuário. A política de armazenamento só deixa cada um escrever na
+ * própria pasta, então o caminho é parte da proteção.
+ */
+export async function uploadAvatar(uid, file) {
+  if (!uid || !file) throw new Error('Arquivo ausente.')
+  if (file.size > 2 * 1024 * 1024) throw new Error('A imagem precisa ter menos de 2 MB.')
+  if (!/^image\/(jpeg|png|webp)$/.test(file.type)) {
+    throw new Error('Use uma imagem JPG, PNG ou WEBP.')
+  }
+
+  const ext = file.type.split('/')[1].replace('jpeg', 'jpg')
+  const caminho = `${uid}/avatar.${ext}`
+
+  const { error } = await supabase.storage
+    .from('avatars')
+    .upload(caminho, file, { upsert: true, contentType: file.type })
+  if (error) throw error
+
+  await saveProfile(uid, { avatar_url: caminho })
+  return caminho
+}
+
+/**
+ * O bucket é privado, então a imagem não tem endereço público. Cada
+ * exibição pede uma URL assinada, válida por uma hora.
+ */
+export async function avatarUrl(caminho) {
+  if (!caminho) return null
+  const { data, error } = await supabase.storage
+    .from('avatars').createSignedUrl(caminho, 3600)
+  if (error) return null
+  return data?.signedUrl || null
+}
+
+export async function removeAvatar(uid, caminho) {
+  if (caminho) await supabase.storage.from('avatars').remove([caminho])
+  await saveProfile(uid, { avatar_url: null })
+}
+
+/** Troca a senha. O Supabase exige uma sessão válida e ativa. */
+export async function updatePassword(novaSenha) {
+  if (!novaSenha || novaSenha.length < 8) {
+    throw new Error('A senha precisa ter ao menos 8 caracteres.')
+  }
+  const { error } = await supabase.auth.updateUser({ password: novaSenha })
+  if (error) throw error
+}
+
+/** Confere a senha atual reautenticando, antes de permitir a troca. */
+export async function verifyPassword(email, senha) {
+  const { error } = await supabase.auth.signInWithPassword({ email, password: senha })
+  return !error
+}
+
 export function friendlyError(error) {
   if (!error) return ''
   const msg = String(error.message || error)
@@ -1250,6 +1333,11 @@ export function friendlyError(error) {
   if (/relation .* does not exist/i.test(msg)) return 'Tabela ausente no banco. Rode a migração 0002 no Supabase.'
   if (/column .* does not exist/i.test(msg)) return 'Coluna ausente no banco. Rode a migração 0002 no Supabase.'
   if (/permission denied|not authorized/i.test(msg)) return 'Sem permissão para esta operação.'
+  if (/should be different from the old/i.test(msg)) return 'A nova senha precisa ser diferente da atual.'
+  if (/Password should be at least/i.test(msg)) return 'A senha precisa ter ao menos 8 caracteres.'
+  if (/Bucket not found/i.test(msg)) return 'Armazenamento de fotos indisponível. Rode a migração 0005 no Supabase.'
+  if (/exceeded the maximum allowed size|Payload too large/i.test(msg)) return 'A imagem é grande demais. Use até 2 MB.'
+  if (/mime type .* is not supported/i.test(msg)) return 'Formato não aceito. Use JPG, PNG ou WEBP.'
   // Mensagem crua do Postgres pode revelar estrutura do banco. Vai só para o console.
   console.warn('Erro não mapeado:', msg)
   return 'Não foi possível concluir. Tente de novo em instantes.'
