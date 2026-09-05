@@ -3,7 +3,7 @@
    ===================================================================== */
 import { ArrowRight, Camera, Check, FileUp, LogOut, PiggyBank, Plus, Scale, Search, ShieldCheck, SlidersHorizontal, Sparkles, Trash2, TriangleAlert, Undo2, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { SETTLED, TABLES, monthOverview, settledCommitment, avatarUrl, uploadAvatar, removeAvatar, updatePassword, verifyPassword, accountLedgerBalance, accountsOverview, addMonths, applyFilters, baseline, cardInvoice, cardLedgerDebt, cardsOverview, cashProjection, categorize, cleanNumberInput, commitmentsForMonth, currentMonth, dayLabel, decimal, defaultHints, deleteRow, dueDateInMonth, ensureDefaults, fetchSettings, fetchTable, fingerprint, flowForMonth, flowSeries, friendlyError, fullDate, groupByCategory, initials, insertMany, insertRow, iso, money, monthEnd, monthKey, monthLabel, monthRange, monthStart, monthlyRateOf, monthsBetween, n, netWorth, nextOccurrence, normalize, objectivesOverview, occurrencesIn, parseCsv, parseMoney, parseOfx, parseStatement, parseStatementDate, pendingInterest, percent, projectInvestments, reservePlan, saveRow, saveSettings, suggestPattern, sum, supabase, toDate, today, totalCardDebt, totalCash, totalInvested, txMonth, updateRow, withOccurrenceIndex } from './lib'
+import { SETTLED, TABLES, monthOverview, settledCommitment, readStatementFile, invoiceSummary, avatarUrl, uploadAvatar, removeAvatar, updatePassword, verifyPassword, accountLedgerBalance, accountsOverview, addMonths, applyFilters, baseline, cardInvoice, cardLedgerDebt, cardsOverview, cashProjection, categorize, cleanNumberInput, commitmentsForMonth, currentMonth, dayLabel, decimal, defaultHints, deleteRow, dueDateInMonth, ensureDefaults, fetchSettings, fetchTable, fingerprint, flowForMonth, flowSeries, friendlyError, fullDate, groupByCategory, initials, insertMany, insertRow, iso, money, monthEnd, monthKey, monthLabel, monthRange, monthStart, monthlyRateOf, monthsBetween, n, netWorth, nextOccurrence, normalize, objectivesOverview, occurrencesIn, parseCsv, parseMoney, parseOfx, parseStatement, parseStatementDate, pendingInterest, percent, projectInvestments, reservePlan, saveRow, saveSettings, suggestPattern, sum, supabase, toDate, today, totalCardDebt, totalCash, totalInvested, txMonth, updateRow, withOccurrenceIndex } from './lib'
 import { useAuth, useData, useLookup } from './data'
 import { Amount, BalanceChart, Button, Card, CategoryChart, ConfirmDelete, Empty, Field, FlowChart, IconButton, Input, Layout, Loading, MoneyField, NAV, NetWorthChart, PALETTE, Pill, ProgressBar, RecordSheet, Row, RunwayStrip, Segmented, Select, Sheet, Switch, Textarea, Toast, TransactionSheet, toPercentInput } from './ui'
 
@@ -1674,6 +1674,9 @@ export function Import() {
   const [parsed, setParsed] = useState(null)
   const [rows, setRows] = useState([])
   const [busy, setBusy] = useState(false)
+  const [lendo, setLendo] = useState(false)
+  const [pdfPendente, setPdfPendente] = useState(null)
+  const [senhaPdf, setSenhaPdf] = useState('')
   const [editingRule, setEditingRule] = useState(null)
   const [tab, setTab] = useState('importar')
 
@@ -1682,11 +1685,32 @@ export function Import() {
     [transactions]
   )
 
-  async function handleFile(file) {
+  async function handleFile(file, senha = '') {
     if (!file) return
     if (!target.id) { notify('Escolha primeiro a conta ou o cartão de destino.', 'error'); return }
-    const text = await file.text()
-    const result = parseStatement(file.name, text)
+
+    let result
+    setLendo(true)
+    try {
+      const cartao = target.type === 'card' ? cards.find((c) => c.id === target.id) : null
+      result = await readStatementFile(file, {
+        password: senha,
+        closingMonth: cartao?.closing_day ? new Date().getMonth() + 1 : undefined
+      })
+    } catch (e) {
+      setLendo(false)
+      if (e?.code === 'SENHA') {
+        // Faturas costumam vir protegidas pelos primeiros dígitos do CPF.
+        setPdfPendente(file)
+        return
+      }
+      notify(friendlyError(e), 'error')
+      return
+    } finally {
+      setLendo(false)
+    }
+    setPdfPendente(null)
+    setSenhaPdf('')
     const prepared = withOccurrenceIndex(result.rows).map((row) => {
       const guess = categorize(row, { rules: importRules, categories })
       const print = fingerprint({
@@ -1742,6 +1766,8 @@ export function Import() {
         status: 'cleared',
         source: 'import',
         import_batch_id: batch.id,
+        installment_no: r.installment_no || null,
+        installment_total: r.installment_total || null,
         fingerprint: r.fingerprint
       })))
 
@@ -1815,16 +1841,44 @@ export function Import() {
             <input
               ref={fileRef}
               type="file"
-              accept=".csv,.txt,.ofx"
+              accept=".csv,.txt,.ofx,.pdf"
               className="file-input"
               onChange={(e) => handleFile(e.target.files?.[0])}
             />
-            <Button variant="outline" icon={<FileUp size={16} />} onClick={() => fileRef.current?.click()}>
-              Escolher arquivo
+            <Button variant="outline" busy={lendo} icon={<FileUp size={16} />}
+              onClick={() => fileRef.current?.click()}>
+              {lendo ? 'Lendo o arquivo…' : 'Escolher arquivo'}
             </Button>
+
+            {pdfPendente && (
+              <div className="alert alert-warn">
+                <TriangleAlert size={16} />
+                <span>
+                  Esta fatura está protegida por senha. Nos cartões brasileiros costuma ser
+                  os primeiros dígitos do seu CPF, ou a data de nascimento.
+                </span>
+                <div className="pdf-senha">
+                  <Input
+                    type="password"
+                    value={senhaPdf}
+                    placeholder="Senha do PDF"
+                    onChange={(e) => setSenhaPdf(e.target.value)}
+                  />
+                  <Button size="sm" busy={lendo} disabled={!senhaPdf}
+                    onClick={() => handleFile(pdfPendente, senhaPdf)}>
+                    Abrir
+                  </Button>
+                  <Button size="sm" variant="quiet"
+                    onClick={() => { setPdfPendente(null); setSenhaPdf('') }}>
+                    Cancelar
+                  </Button>
+                </div>
+              </div>
+            )}
             <p className="hint">
-              O arquivo é lido no seu navegador. Nada é enviado a terceiros — só os lançamentos que você confirmar
-              vão para o seu banco de dados.
+              Aceita CSV e OFX do internet banking, e a fatura do cartão em PDF. O arquivo é lido
+              dentro do seu navegador — nem o PDF nem a senha dele saem do aparelho. Só os
+              lançamentos que você confirmar vão para o seu banco de dados.
             </p>
           </Card>
 
@@ -1841,6 +1895,26 @@ export function Import() {
                   desmarcadas.
                 </div>
               )}
+              {parsed.summary?.total != null && (() => {
+                const somaLida = rows
+                  .filter((r) => r.amount < 0)
+                  .reduce((acc, r) => acc + Math.abs(r.amount), 0)
+                const diferenca = parsed.summary.total - somaLida
+                const bate = Math.abs(diferenca) < 0.05
+                return (
+                  <div className={`alert ${bate ? 'alert-accent' : 'alert-warn'}`}>
+                    {bate ? <Check size={16} /> : <TriangleAlert size={16} />}
+                    <span>
+                      A fatura declara {money(parsed.summary.total, { hide })} e as linhas lidas
+                      somam {money(somaLida, { hide })}.
+                      {bate
+                        ? ' Confere.'
+                        : ` Faltam ${money(Math.abs(diferenca), { hide })} — role a lista e confira se alguma linha ficou de fora.`}
+                    </span>
+                  </div>
+                )
+              })()}
+
               {uncategorized.length > 0 && (
                 <div className="alert alert-neutral">
                   {uncategorized.length} sem categoria. Escolha na lista abaixo ou crie uma regra para não repetir o
