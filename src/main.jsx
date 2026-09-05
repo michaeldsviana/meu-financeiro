@@ -8,7 +8,7 @@ import { AuthProvider, DataProvider, useAuth, useData } from './data'
 import { Button, Card, Layout, Loading, TransactionSheet } from './ui'
 import {
   Login, Dashboard, CashFlow, Transactions, Accounts, Cards, Investments,
-  Properties, Subscriptions, Health, Capital, Import, Settings
+  Properties, Subscriptions, Health, Capital, Import, Settings, Profile
 } from './pages'
 import './styles.css'
 
@@ -24,7 +24,8 @@ const PAGES = {
   saude: Health,
   capital: Capital,
   importar: Import,
-  ajustes: Settings
+  ajustes: Settings,
+  perfil: Profile
 }
 
 /* -------------------------------------------------------------------
