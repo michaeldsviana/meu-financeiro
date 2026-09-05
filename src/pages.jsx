@@ -1,9 +1,9 @@
 /* =====================================================================
    pages.jsx — uma seção do app por bloco.
    ===================================================================== */
-import { ArrowRight, Camera, Check, FileUp, PiggyBank, Plus, Scale, Search, ShieldCheck, SlidersHorizontal, Sparkles, Trash2, TriangleAlert, Undo2, X } from 'lucide-react'
-import { useMemo, useRef, useState } from 'react'
-import { SETTLED, TABLES, monthOverview, settledCommitment, accountLedgerBalance, accountsOverview, addMonths, applyFilters, baseline, cardInvoice, cardLedgerDebt, cardsOverview, cashProjection, categorize, cleanNumberInput, commitmentsForMonth, currentMonth, dayLabel, decimal, defaultHints, deleteRow, dueDateInMonth, ensureDefaults, fetchSettings, fetchTable, fingerprint, flowForMonth, flowSeries, friendlyError, fullDate, groupByCategory, initials, insertMany, insertRow, iso, money, monthEnd, monthKey, monthLabel, monthRange, monthStart, monthlyRateOf, monthsBetween, n, netWorth, nextOccurrence, normalize, objectivesOverview, occurrencesIn, parseCsv, parseMoney, parseOfx, parseStatement, parseStatementDate, pendingInterest, percent, projectInvestments, reservePlan, saveRow, saveSettings, suggestPattern, sum, supabase, toDate, today, totalCardDebt, totalCash, totalInvested, txMonth, updateRow, withOccurrenceIndex } from './lib'
+import { ArrowRight, Camera, Check, FileUp, LogOut, PiggyBank, Plus, Scale, Search, ShieldCheck, SlidersHorizontal, Sparkles, Trash2, TriangleAlert, Undo2, X } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { SETTLED, TABLES, monthOverview, settledCommitment, avatarUrl, uploadAvatar, removeAvatar, updatePassword, verifyPassword, accountLedgerBalance, accountsOverview, addMonths, applyFilters, baseline, cardInvoice, cardLedgerDebt, cardsOverview, cashProjection, categorize, cleanNumberInput, commitmentsForMonth, currentMonth, dayLabel, decimal, defaultHints, deleteRow, dueDateInMonth, ensureDefaults, fetchSettings, fetchTable, fingerprint, flowForMonth, flowSeries, friendlyError, fullDate, groupByCategory, initials, insertMany, insertRow, iso, money, monthEnd, monthKey, monthLabel, monthRange, monthStart, monthlyRateOf, monthsBetween, n, netWorth, nextOccurrence, normalize, objectivesOverview, occurrencesIn, parseCsv, parseMoney, parseOfx, parseStatement, parseStatementDate, pendingInterest, percent, projectInvestments, reservePlan, saveRow, saveSettings, suggestPattern, sum, supabase, toDate, today, totalCardDebt, totalCash, totalInvested, txMonth, updateRow, withOccurrenceIndex } from './lib'
 import { useAuth, useData, useLookup } from './data'
 import { Amount, BalanceChart, Button, Card, CategoryChart, ConfirmDelete, Empty, Field, FlowChart, IconButton, Input, Layout, Loading, MoneyField, NAV, NetWorthChart, PALETTE, Pill, ProgressBar, RecordSheet, Row, RunwayStrip, Segmented, Select, Sheet, Switch, Textarea, Toast, TransactionSheet, toPercentInput } from './ui'
 
@@ -2153,4 +2153,282 @@ export function Settings() {
       />
     </div>
   )
+}
+
+/* ---------- Profile ---------- */
+export function Profile() {
+  const { session, signOut } = useAuth()
+  const { profile, updateProfile, notify, ...data } = useData()
+  const hide = data.hideValues
+
+  const [form, setForm] = useState({})
+  const [foto, setFoto] = useState(null)
+  const [enviando, setEnviando] = useState(false)
+  const [salvando, setSalvando] = useState(false)
+  const [senhaAberta, setSenhaAberta] = useState(false)
+  const arquivoRef = useRef(null)
+
+  useEffect(() => { setForm(profile || {}) }, [profile])
+
+  useEffect(() => {
+    let vivo = true
+    if (!profile?.avatar_url) { setFoto(null); return }
+    avatarUrl(profile.avatar_url).then((u) => { if (vivo) setFoto(u) })
+    return () => { vivo = false }
+  }, [profile?.avatar_url])
+
+  const uid = session?.user?.id
+  const email = session?.user?.email
+  const desde = session?.user?.created_at
+  const alterado = JSON.stringify(form) !== JSON.stringify(profile || {})
+
+  async function escolherFoto(file) {
+    if (!file) return
+    setEnviando(true)
+    try {
+      const caminho = await uploadAvatar(uid, file)
+      await updateProfile({ avatar_url: caminho })
+      notify('Foto atualizada.')
+    } catch (e) {
+      notify(friendlyError(e), 'error')
+    } finally {
+      setEnviando(false)
+      if (arquivoRef.current) arquivoRef.current.value = ''
+    }
+  }
+
+  async function tirarFoto() {
+    setEnviando(true)
+    try {
+      await removeAvatar(uid, profile?.avatar_url)
+      await updateProfile({ avatar_url: null })
+      setFoto(null)
+      notify('Foto removida.')
+    } catch (e) {
+      notify(friendlyError(e), 'error')
+    } finally {
+      setEnviando(false)
+    }
+  }
+
+  async function salvar() {
+    setSalvando(true)
+    try {
+      await updateProfile({
+        full_name: form.full_name || null,
+        phone: form.phone || null,
+        birth_date: form.birth_date || null,
+        city: form.city || null,
+        occupation: form.occupation || null,
+        monthly_income: form.monthly_income === '' ? null : form.monthly_income
+      })
+      notify('Perfil salvo.')
+    } catch (e) {
+      notify(friendlyError(e), 'error')
+    } finally {
+      setSalvando(false)
+    }
+  }
+
+  const nome = form.full_name || email?.split('@')[0] || 'Você'
+  const totalContas = (data.accounts || []).filter((a) => !a.archived).length
+  const totalLancamentos = (data.transactions || []).length
+  const patrimonio = netWorth(data)
+
+  return (
+    <div className="stack">
+      <Card>
+        <div className="profile-head">
+          <div className="avatar-wrap">
+            {foto
+              ? <img className="avatar" src={foto} alt={nome} />
+              : <div className="avatar avatar-empty">{initials(nome)}</div>}
+            <button
+              className="avatar-edit"
+              onClick={() => arquivoRef.current?.click()}
+              disabled={enviando}
+              aria-label="Trocar foto"
+            >
+              <Camera size={15} />
+            </button>
+          </div>
+
+          <div className="profile-id">
+            <h2>{nome}</h2>
+            <p className="lrow-sub">{email}</p>
+            {desde && <p className="hint">No Meu Financeiro desde {fullDate(desde)}</p>}
+          </div>
+        </div>
+
+        <input
+          ref={arquivoRef}
+          type="file"
+          accept="image/jpeg,image/png,image/webp"
+          className="file-input"
+          onChange={(e) => escolherFoto(e.target.files?.[0])}
+        />
+
+        <div className="card-actions">
+          <Button size="sm" variant="outline" busy={enviando} icon={<Camera size={16} />}
+            onClick={() => arquivoRef.current?.click()}>
+            {foto ? 'Trocar foto' : 'Adicionar foto'}
+          </Button>
+          {foto && (
+            <Button size="sm" variant="quiet" onClick={tirarFoto} disabled={enviando}>Remover</Button>
+          )}
+        </div>
+        <p className="hint">JPG, PNG ou WEBP, até 2 MB. A imagem fica num espaço privado e só você a enxerga.</p>
+      </Card>
+
+      <Card title="Seus dados" subtitle="Nada aqui é obrigatório.">
+        <div className="form-grid">
+          <Field label="Nome completo" wide>
+            <Input value={form.full_name || ''} placeholder="Como você quer ser chamado"
+              onChange={(e) => setForm((f) => ({ ...f, full_name: e.target.value }))} />
+          </Field>
+          <Field label="Telefone">
+            <Input type="tel" inputMode="tel" value={form.phone || ''} placeholder="(00) 00000-0000"
+              onChange={(e) => setForm((f) => ({ ...f, phone: e.target.value }))} />
+          </Field>
+          <Field label="Nascimento">
+            <Input type="date" value={form.birth_date || ''}
+              onChange={(e) => setForm((f) => ({ ...f, birth_date: e.target.value }))} />
+          </Field>
+          <Field label="Cidade">
+            <Input value={form.city || ''} placeholder="Onde você mora"
+              onChange={(e) => setForm((f) => ({ ...f, city: e.target.value }))} />
+          </Field>
+          <Field label="Ocupação">
+            <Input value={form.occupation || ''} placeholder="O que você faz"
+              onChange={(e) => setForm((f) => ({ ...f, occupation: e.target.value }))} />
+          </Field>
+          <Field label="Renda mensal" hint="Usada só como referência sua. O sistema calcula pelas receitas lançadas." wide>
+            <MoneyField value={form.monthly_income ?? ''}
+              onChange={(v) => setForm((f) => ({ ...f, monthly_income: v }))} />
+          </Field>
+        </div>
+        <div className="card-actions">
+          <Button busy={salvando} disabled={!alterado} onClick={salvar}>Salvar alterações</Button>
+          {alterado && <Button variant="quiet" onClick={() => setForm(profile || {})}>Descartar</Button>}
+        </div>
+      </Card>
+
+      <Card title="Seu uso do sistema">
+        <div className="kpis">
+          <div><span>Contas</span><b>{totalContas}</b></div>
+          <div><span>Lançamentos</span><b>{totalLancamentos}</b></div>
+          <div><span>Categorias</span><b>{(data.categories || []).length}</b></div>
+          <div><span>Patrimônio</span><Amount value={patrimonio.total} hide={hide} /></div>
+        </div>
+      </Card>
+
+      <Card title="Segurança">
+        <div className="list">
+          <Row label="Senha" sub="Recomendado trocar de tempos em tempos"
+            right={<button className="link" onClick={() => setSenhaAberta(true)}>Alterar</button>} />
+          <Row label="E-mail de acesso" sub={email}
+            right={<Pill tone="neutral">fixo</Pill>} />
+          <Row label="Proteção dos dados" sub="Cada registro é gravado com o seu identificador e o banco bloqueia leituras de outras contas."
+            right={<Pill tone="accent">RLS ativo</Pill>} />
+        </div>
+        <div className="card-actions">
+          <Button variant="outline" icon={<LogOut size={16} />} onClick={signOut}>Sair da conta</Button>
+        </div>
+      </Card>
+
+      <PasswordSheet open={senhaAberta} email={email} onClose={() => setSenhaAberta(false)} notify={notify} />
+    </div>
+  )
+}
+
+function PasswordSheet({ open, email, onClose, notify }) {
+  const [atual, setAtual] = useState('')
+  const [nova, setNova] = useState('')
+  const [repetida, setRepetida] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [erro, setErro] = useState('')
+
+  useEffect(() => {
+    if (open) { setAtual(''); setNova(''); setRepetida(''); setErro('') }
+  }, [open])
+
+  const forca = medirSenha(nova)
+
+  async function trocar() {
+    setErro('')
+    if (nova !== repetida) { setErro('A confirmação não confere com a nova senha.'); return }
+    if (nova.length < 8) { setErro('A nova senha precisa ter ao menos 8 caracteres.'); return }
+    if (nova === atual) { setErro('A nova senha precisa ser diferente da atual.'); return }
+
+    setBusy(true)
+    try {
+      // Reautentica antes de trocar: sem isso, uma sessão aberta e esquecida
+      // num aparelho emprestado permitiria trocar a senha sem saber a antiga.
+      const confere = await verifyPassword(email, atual)
+      if (!confere) { setErro('A senha atual está incorreta.'); return }
+      await updatePassword(nova)
+      notify('Senha alterada.')
+      onClose()
+    } catch (e) {
+      setErro(friendlyError(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Sheet
+      open={open}
+      title="Alterar senha"
+      onClose={onClose}
+      footer={(
+        <div className="sheet-actions">
+          <Button variant="quiet" onClick={onClose}>Cancelar</Button>
+          <Button busy={busy} onClick={trocar} disabled={!atual || !nova || !repetida}>Alterar</Button>
+        </div>
+      )}
+    >
+      <div className="form-grid">
+        <Field label="Senha atual" wide>
+          <Input type="password" autoComplete="current-password" value={atual}
+            onChange={(e) => setAtual(e.target.value)} />
+        </Field>
+        <Field label="Nova senha" wide hint="Ao menos 8 caracteres. Misturar letras, números e símbolos ajuda.">
+          <Input type="password" autoComplete="new-password" value={nova}
+            onChange={(e) => setNova(e.target.value)} />
+        </Field>
+        {nova && (
+          <div className="field field-wide">
+            <ProgressBar value={forca.valor} tone={forca.tone} />
+            <span className="field-hint">{forca.rotulo}</span>
+          </div>
+        )}
+        <Field label="Repita a nova senha" wide>
+          <Input type="password" autoComplete="new-password" value={repetida}
+            onChange={(e) => setRepetida(e.target.value)} />
+        </Field>
+        {erro && <p className="form-error">{erro}</p>}
+      </div>
+    </Sheet>
+  )
+}
+
+/** Medida simples e honesta: comprimento e variedade, sem prometer segurança. */
+function medirSenha(senha) {
+  if (!senha) return { valor: 0, rotulo: '', tone: 'risk' }
+  let pontos = 0
+  if (senha.length >= 8) pontos++
+  if (senha.length >= 12) pontos++
+  if (/[a-z]/.test(senha) && /[A-Z]/.test(senha)) pontos++
+  if (/\d/.test(senha)) pontos++
+  if (/[^\w\s]/.test(senha)) pontos++
+  const escala = [
+    { rotulo: 'Muito curta', tone: 'risk' },
+    { rotulo: 'Fraca', tone: 'risk' },
+    { rotulo: 'Razoável', tone: 'warn' },
+    { rotulo: 'Boa', tone: 'warn' },
+    { rotulo: 'Forte', tone: 'accent' },
+    { rotulo: 'Muito forte', tone: 'accent' }
+  ]
+  return { valor: pontos / 5, ...escala[pontos] }
 }
