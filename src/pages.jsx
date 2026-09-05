@@ -3,7 +3,7 @@
    ===================================================================== */
 import { ArrowRight, Camera, Check, FileUp, PiggyBank, Plus, Scale, Search, ShieldCheck, SlidersHorizontal, Sparkles, Trash2, TriangleAlert, Undo2, X } from 'lucide-react'
 import { useMemo, useRef, useState } from 'react'
-import { SETTLED, TABLES, accountLedgerBalance, accountsOverview, addMonths, applyFilters, baseline, cardInvoice, cardLedgerDebt, cardsOverview, cashProjection, categorize, cleanNumberInput, commitmentsForMonth, currentMonth, dayLabel, decimal, defaultHints, deleteRow, dueDateInMonth, ensureDefaults, fetchSettings, fetchTable, fingerprint, flowForMonth, flowSeries, friendlyError, fullDate, groupByCategory, initials, insertMany, insertRow, iso, money, monthEnd, monthKey, monthLabel, monthRange, monthStart, monthlyRateOf, monthsBetween, n, netWorth, nextOccurrence, normalize, objectivesOverview, occurrencesIn, parseCsv, parseMoney, parseOfx, parseStatement, parseStatementDate, pendingInterest, percent, projectInvestments, reservePlan, saveRow, saveSettings, suggestPattern, sum, supabase, toDate, today, totalCardDebt, totalCash, totalInvested, txMonth, updateRow, withOccurrenceIndex } from './lib'
+import { SETTLED, TABLES, monthOverview, settledCommitment, accountLedgerBalance, accountsOverview, addMonths, applyFilters, baseline, cardInvoice, cardLedgerDebt, cardsOverview, cashProjection, categorize, cleanNumberInput, commitmentsForMonth, currentMonth, dayLabel, decimal, defaultHints, deleteRow, dueDateInMonth, ensureDefaults, fetchSettings, fetchTable, fingerprint, flowForMonth, flowSeries, friendlyError, fullDate, groupByCategory, initials, insertMany, insertRow, iso, money, monthEnd, monthKey, monthLabel, monthRange, monthStart, monthlyRateOf, monthsBetween, n, netWorth, nextOccurrence, normalize, objectivesOverview, occurrencesIn, parseCsv, parseMoney, parseOfx, parseStatement, parseStatementDate, pendingInterest, percent, projectInvestments, reservePlan, saveRow, saveSettings, suggestPattern, sum, supabase, toDate, today, totalCardDebt, totalCash, totalInvested, txMonth, updateRow, withOccurrenceIndex } from './lib'
 import { useAuth, useData, useLookup } from './data'
 import { Amount, BalanceChart, Button, Card, CategoryChart, ConfirmDelete, Empty, Field, FlowChart, IconButton, Input, Layout, Loading, MoneyField, NAV, NetWorthChart, PALETTE, Pill, ProgressBar, RecordSheet, Row, RunwayStrip, Segmented, Select, Sheet, Switch, Textarea, Toast, TransactionSheet, toPercentInput } from './ui'
 
@@ -129,11 +129,12 @@ export function Dashboard({ navigate }) {
   )
   const reserve = useMemo(() => reservePlan(data), [data])
   const flow = useMemo(() => flowForMonth(data.transactions, month), [data.transactions, month])
+  const overview = useMemo(() => monthOverview(data, month), [data, month])
   const byCategory = useMemo(
     () => groupByCategory(data.transactions, data.categories, month),
     [data.transactions, data.categories, month]
   )
-  const commitments = useMemo(() => commitmentsForMonth(data, month), [data, month])
+  const commitments = overview.commitments
   const accounts = useMemo(() => accountsOverview(data.accounts, data.transactions), [data.accounts, data.transactions])
   const cards = useMemo(() => cardsOverview(data.cards, data.transactions), [data.cards, data.transactions])
   const objectives = useMemo(
@@ -252,24 +253,65 @@ export function Dashboard({ navigate }) {
         <Card title={`Resultado de ${monthLabel(month, { long: true })}`}>
           <div className="kpis">
             <div><span>Receitas</span><Amount value={flow.income} hide={hide} tone="up" /></div>
-            <div><span>Despesas</span><Amount value={flow.expense} hide={hide} tone="down" /></div>
+            <div><span>Despesa total</span><Amount value={overview.totalEsperado} hide={hide} tone="down" /></div>
             <div><span>Aportes</span><Amount value={flow.invested} hide={hide} /></div>
-            <div><span>Sobra</span><Amount value={flow.cash} hide={hide} signed /></div>
+            <div><span>Sobra prevista</span>
+              <Amount value={overview.resultadoEsperado - flow.invested} hide={hide} signed />
+            </div>
+          </div>
+          <div className="list">
+            <Row label="Já lançado" sub="Passou pelo razão ou veio do extrato"
+              right={<Amount value={-overview.lancado} hide={hide} />} />
+            <Row label="Ainda a pagar" sub="Recorrentes cadastrados que não apareceram no razão"
+              right={<Amount value={-overview.aPagar} hide={hide} />} />
           </div>
           {flow.income > 0 && (
-            <p className="hint">Você guardou {Math.round((flow.cash / flow.income) * 100)}% do que entrou.</p>
+            <p className="hint">
+              Se tudo correr como previsto, sobram{' '}
+              {Math.round(((overview.resultadoEsperado - flow.invested) / flow.income) * 100)}% do que entrou.
+            </p>
           )}
         </Card>
 
-        <Card title="Compromissos do mês" subtitle={`${commitments.length} lançamentos previstos`}>
+        <Card
+          title="Recorrentes do mês"
+          subtitle={
+            commitments.length
+              ? `${commitments.length - overview.pendentes.length} de ${commitments.length} já no razão`
+              : 'nada cadastrado'
+          }
+        >
           {commitments.length ? (
-            <div className="list list-scroll">
-              {commitments.slice(0, 8).map((c) => (
-                <Row key={c.id} label={c.name} sub={`${c.source} · ${dayLabel(c.date)}`}
-                  right={<Amount value={-c.amount} hide={hide} />} />
-              ))}
-            </div>
-          ) : <Empty title="Nada previsto para este mês" hint="Assinaturas, obrigações de imóveis e parcelas aparecem aqui." />}
+            <>
+              {overview.pendentes.length > 0 && (
+                <div className="alert alert-warn">
+                  <TriangleAlert size={16} />
+                  {overview.pendentes.length === 1
+                    ? 'Falta 1 despesa recorrente aparecer no razão'
+                    : `Faltam ${overview.pendentes.length} despesas recorrentes aparecerem no razão`}
+                  {' '}({money(overview.aPagar, { hide })}).
+                </div>
+              )}
+              <div className="list list-scroll">
+                {commitments.slice(0, 10).map((c) => (
+                  <Row
+                    key={c.id}
+                    label={c.name}
+                    badge={c.settled
+                      ? <Pill tone="accent">no razão</Pill>
+                      : <Pill tone="warn">a pagar</Pill>}
+                    sub={`${c.source} · ${dayLabel(c.date)}${c.projected ? ' · projetado' : ''}`}
+                    right={<Amount value={-c.amount} hide={hide} tone={c.settled ? 'flat' : 'down'} />}
+                  />
+                ))}
+              </div>
+            </>
+          ) : (
+            <Empty
+              title="Nada recorrente cadastrado"
+              hint="Assinaturas, obrigações de imóveis, parcelas e custos de saúde marcados como recorrentes aparecem aqui."
+            />
+          )}
         </Card>
       </div>
 
