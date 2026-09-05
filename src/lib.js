@@ -1139,16 +1139,44 @@ export function parseInvoiceLines(linhas, { year, closingMonth, vencimento } = {
 
 /** Descobre o total e o vencimento declarados na fatura, para conferência. */
 export function invoiceSummary(linhas) {
-  let total = null
   let vencimento = null
+  const DATA_SOLTA = /(\d{2})\/(\d{2})\/(\d{2,4})/
+  const VALOR_SOLTO = /([\d.]+,\d{2})/
+  // Da mais confiável pra mais genérica: "total a pagar" sozinho também
+  // aparece em textos de simulação de parcelamento de fatura (com um valor
+  // maior, já com juros), então só vale como último recurso — quando existe
+  // um rótulo mais específico ("total da/desta fatura"), ele ganha mesmo
+  // aparecendo depois no texto. Os rótulos ficam ancorados no início da
+  // linha (^\s*) para não pegar essas frases explicativas no meio de um
+  // parágrafo — um rótulo de verdade abre a linha, não aparece no meio dela.
+  const ROTULOS_TOTAL = [
+    /^\s*total\s+(?:da|desta)\s+fatura/i,
+    /^\s*valor\s+total\s+da\s+fatura/i,
+    /^\s*(?:valor\s+)?total\s+a\s+pagar/i
+  ]
+  const totalPorRotulo = []
 
-  linhas.forEach((linha) => {
-    if (total == null) {
-      const m = /(total\s+(?:da\s+)?fatura|valor\s+total|total\s+a\s+pagar)\D{0,20}([\d.]+,\d{2})/i.exec(linha)
-      if (m) total = parseMoney(m[2])
+  linhas.forEach((linha, i) => {
+    const idxRotulo = ROTULOS_TOTAL.findIndex((re) => re.test(linha))
+    if (idxRotulo !== -1 && totalPorRotulo[idxRotulo] == null) {
+      // Mesma ideia do vencimento: em algumas faturas o rótulo e o valor
+      // ficam em linhas de tabela separadas (rótulo, depois cabeçalho de
+      // coluna, depois o valor).
+      const m =
+        VALOR_SOLTO.exec(linha) ||
+        VALOR_SOLTO.exec(linhas[i + 1] || '') ||
+        VALOR_SOLTO.exec(linhas[i + 2] || '')
+      if (m) totalPorRotulo[idxRotulo] = parseMoney(m[1])
     }
-    if (vencimento == null) {
-      const m = /vencimento\D{0,20}(\d{2})\/(\d{2})\/(\d{2,4})/i.exec(linha)
+    if (vencimento == null && /vencimento/i.test(linha)) {
+      // Nem toda fatura escreve o rótulo e a data na mesma linha: o Santander,
+      // por exemplo, imprime "Vencimento" numa linha de cabeçalho de tabela e
+      // o valor "09/09/2026" só aparece na linha seguinte. Por isso, se a
+      // própria linha não tiver uma data, olhamos as duas linhas seguintes.
+      const m =
+        DATA_SOLTA.exec(linha) ||
+        DATA_SOLTA.exec(linhas[i + 1] || '') ||
+        DATA_SOLTA.exec(linhas[i + 2] || '')
       if (m) {
         let ano = parseInt(m[3], 10)
         if (ano < 100) ano += 2000
@@ -1157,6 +1185,7 @@ export function invoiceSummary(linhas) {
     }
   })
 
+  const total = totalPorRotulo.find((v) => v != null) ?? null
   return { total, vencimento }
 }
 
