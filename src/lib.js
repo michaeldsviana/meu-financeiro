@@ -947,7 +947,8 @@ export async function readStatementFile(file, { password = '', closingMonth } = 
     const resumo = invoiceSummary(linhas)
     const parsed = parseInvoiceLines(linhas, {
       year: resumo.vencimento ? Number(resumo.vencimento.slice(0, 4)) : undefined,
-      closingMonth
+      closingMonth,
+      vencimento: resumo.vencimento
     })
     return { ...parsed, summary: resumo, lineCount: linhas.length }
   }
@@ -1040,10 +1041,17 @@ const RUIDO = /^(fatura|cart[aã]o|limite|total|resumo|pagamento m[ií]nimo|venc
  * Parcelas viram installment_no e installment_total. Valores negativos,
  * ou linhas de pagamento e estorno, entram como crédito.
  */
-export function parseInvoiceLines(linhas, { year, closingMonth } = {}) {
+export function parseInvoiceLines(linhas, { year, closingMonth, vencimento } = {}) {
   const rows = []
   const avisos = []
   const anoBase = year || new Date().getFullYear()
+  // Mês de competência = mês em que a fatura vence, ou seja, quando o valor
+  // realmente sai da conta. Compras parceladas trazem a data da compra
+  // original em cada linha (ex.: parcela 5/6 de abril numa fatura de
+  // setembro) — sem isso, o lançamento "aparece" no mês da compra em vez do
+  // mês em que ele de fato pesa no caixa, o que bagunça o histórico de quem
+  // começa a usar o app a partir de uma fatura com parcelas antigas.
+  const competenceMonth = vencimento ? `${vencimento.slice(0, 7)}-01` : null
 
   const REGEX_LINHA = new RegExp(
     '^(\\d{1,2})[\\/\\s.-]([a-zA-Zç]{3}|\\d{1,2})(?:[\\/\\s.-](\\d{2,4}))?\\s+' +  // data
@@ -1106,8 +1114,14 @@ export function parseInvoiceLines(linhas, { year, closingMonth } = {}) {
       /^(C|CR)$/i.test(sufixo || '') ||
       /pagamento|estorno|cr[eé]dito|devolu[cç][aã]o|desconto/i.test(descricao)
 
+    const dataCompra = `${ano}-${String(mes).padStart(2, '0')}-${String(d).padStart(2, '0')}`
+
     rows.push({
-      date: `${ano}-${String(mes).padStart(2, '0')}-${String(d).padStart(2, '0')}`,
+      date: dataCompra,
+      purchaseDate: dataCompra,
+      // Sempre que soubermos o vencimento da fatura, o lançamento "conta"
+      // no mês da fatura — a data da compra fica só como referência.
+      competence_month: competenceMonth,
       description: descricao,
       amount: ehCredito ? Math.abs(valor) : -Math.abs(valor),
       kind: ehCredito ? 'income' : 'expense',

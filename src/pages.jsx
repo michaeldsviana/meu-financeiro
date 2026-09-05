@@ -1756,7 +1756,10 @@ export function Import() {
 
       await saveMany('transactions', selected.map((r) => ({
         tx_date: r.date,
-        competence_month: monthStart(r.date.slice(0, 7)),
+        // Faturas em PDF já vêm com competence_month = mês do vencimento
+        // (definido em parseInvoiceLines); para CSV/OFX, cai no mês da
+        // própria data do lançamento.
+        competence_month: r.competence_month || monthStart(r.date.slice(0, 7)),
         description: r.description,
         amount: r.kind === 'income' ? Math.abs(r.amount) : -Math.abs(r.amount),
         kind: r.kind,
@@ -1935,6 +1938,8 @@ export function Import() {
                       <b>{r.description}</b>
                       <small>
                         {fullDate(r.date)}
+                        {r.competence_month && r.competence_month.slice(0, 7) !== r.date.slice(0, 7) &&
+                          <> · cobrado na fatura de {monthLabel(r.competence_month)}</>}
                         {r.duplicate && <> · <span className="warn">já importado</span></>}
                         {r.suggested && <> · sugerido</>}
                       </small>
