@@ -2,7 +2,7 @@
    data.jsx — sessão do usuário e carregamento global dos dados.
    ===================================================================== */
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
-import { SETTLED, TABLES, accountLedgerBalance, accountsOverview, addMonths, applyFilters, baseline, cardInvoice, cardLedgerDebt, cardsOverview, cashProjection, categorize, cleanNumberInput, commitmentsForMonth, currentMonth, dayLabel, decimal, defaultHints, deleteRow, dueDateInMonth, ensureDefaults, fetchSettings, fetchTable, fingerprint, flowForMonth, flowSeries, friendlyError, fullDate, groupByCategory, initials, insertMany, insertRow, iso, money, monthEnd, monthKey, monthLabel, monthRange, monthStart, monthlyRateOf, monthsBetween, n, netWorth, nextOccurrence, normalize, objectivesOverview, occurrencesIn, parseCsv, parseMoney, parseOfx, parseStatement, parseStatementDate, pendingInterest, percent, projectInvestments, reservePlan, saveRow, saveSettings, suggestPattern, sum, supabase, toDate, today, totalCardDebt, totalCash, totalInvested, txMonth, updateRow, withOccurrenceIndex } from './lib'
+import { fetchProfile, saveProfile, SETTLED, TABLES, accountLedgerBalance, accountsOverview, addMonths, applyFilters, baseline, cardInvoice, cardLedgerDebt, cardsOverview, cashProjection, categorize, cleanNumberInput, commitmentsForMonth, currentMonth, dayLabel, decimal, defaultHints, deleteRow, dueDateInMonth, ensureDefaults, fetchSettings, fetchTable, fingerprint, flowForMonth, flowSeries, friendlyError, fullDate, groupByCategory, initials, insertMany, insertRow, iso, money, monthEnd, monthKey, monthLabel, monthRange, monthStart, monthlyRateOf, monthsBetween, n, netWorth, nextOccurrence, normalize, objectivesOverview, occurrencesIn, parseCsv, parseMoney, parseOfx, parseStatement, parseStatementDate, pendingInterest, percent, projectInvestments, reservePlan, saveRow, saveSettings, suggestPattern, sum, supabase, toDate, today, totalCardDebt, totalCash, totalInvested, txMonth, updateRow, withOccurrenceIndex } from './lib'
 
 /* ---------- AuthProvider ---------- */
 const AuthContext = createContext(null)
@@ -84,6 +84,7 @@ export function DataProvider({ children }) {
   const uid = session?.user?.id
   const [data, setData] = useState(EMPTY)
   const [settings, setSettings] = useState(null)
+  const [profile, setProfile] = useState(null)
   const [status, setStatus] = useState('loading')
   const [error, setError] = useState('')
   const [month, setMonth] = useState(currentMonth())
@@ -110,6 +111,7 @@ export function DataProvider({ children }) {
       keys.forEach((k, i) => { next[k] = results[i] })
       setData(next)
       setSettings(await fetchSettings(uid))
+      setProfile(await fetchProfile(uid))
       setStatus('ready')
     } catch (e) {
       setError(friendlyError(e))
@@ -165,6 +167,12 @@ export function DataProvider({ children }) {
     }
   }, [notify])
 
+  const updateProfile = useCallback(async (patch) => {
+    const salvo = await saveProfile(uid, patch)
+    setProfile(salvo)
+    return salvo
+  }, [uid])
+
   const updateSettings = useCallback(async (patch) => {
     try {
       const saved = await saveSettings(uid, patch)
@@ -179,6 +187,8 @@ export function DataProvider({ children }) {
   const value = useMemo(() => ({
     ...data,
     settings,
+    profile,
+    updateProfile,
     today: today(),
     status,
     error,
