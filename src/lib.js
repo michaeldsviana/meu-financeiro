@@ -1015,7 +1015,7 @@ export async function pdfToLines(file, password = '') {
       })
   }
 
-  await doc.destroy()
+  await doc.loadingTask.destroy()
   return linhas
 }
 
