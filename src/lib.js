@@ -937,9 +937,215 @@ export function parseStatement(fileName, text) {
   return isOfx ? { ...parseOfx(text), fileType: 'ofx' } : { ...parseCsv(text), fileType: 'csv' }
 }
 
+/**
+ * Ponto de entrada único da importação: decide pelo tipo do arquivo.
+ * PDF exige leitura binária e pode pedir senha, então tem caminho próprio.
+ */
+export async function readStatementFile(file, { password = '', closingMonth } = {}) {
+  if (/\.pdf$/i.test(file.name) || file.type === 'application/pdf') {
+    const linhas = await pdfToLines(file, password)
+    const resumo = invoiceSummary(linhas)
+    const parsed = parseInvoiceLines(linhas, {
+      year: resumo.vencimento ? Number(resumo.vencimento.slice(0, 4)) : undefined,
+      closingMonth
+    })
+    return { ...parsed, summary: resumo, lineCount: linhas.length }
+  }
+  const texto = await file.text()
+  return parseStatement(file.name, texto)
+}
+
 // ---------------------------------------------------------------------
 // Impressão digital para não importar a mesma linha duas vezes
 // ---------------------------------------------------------------------
+
+/* ---------- leitura de fatura em PDF ---------- */
+
+/**
+ * Extrai as linhas de texto de um PDF.
+ *
+ * A biblioteca é pesada (perto de 1 MB), então entra por importação
+ * dinâmica: quem nunca abre um PDF nunca paga esse download.
+ *
+ * O PDF não tem noção de "linha" — tem pedaços de texto com coordenadas.
+ * Reagrupamos por altura e ordenamos por posição horizontal.
+ */
+export async function pdfToLines(file, password = '') {
+  const pdfjs = await import('pdfjs-dist')
+  pdfjs.GlobalWorkerOptions.workerSrc =
+    new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString()
+
+  const buffer = await file.arrayBuffer()
+  let doc
+  try {
+    doc = await pdfjs.getDocument({ data: buffer, password }).promise
+  } catch (e) {
+    if (/password/i.test(e?.message || '') || e?.name === 'PasswordException') {
+      const erro = new Error('SENHA')
+      erro.code = 'SENHA'
+      throw erro
+    }
+    throw e
+  }
+
+  const linhas = []
+  for (let p = 1; p <= doc.numPages; p++) {
+    const page = await doc.getPage(p)
+    const content = await page.getTextContent()
+
+    const porAltura = new Map()
+    content.items.forEach((item) => {
+      if (!item.str || !item.str.trim()) return
+      const y = Math.round(item.transform[5])
+      const x = item.transform[4]
+      if (!porAltura.has(y)) porAltura.set(y, [])
+      porAltura.get(y).push({ x, texto: item.str })
+    })
+
+    ;[...porAltura.entries()]
+      .sort((a, b) => b[0] - a[0])           // de cima para baixo
+      .forEach(([, pedacos]) => {
+        const linha = pedacos
+          .sort((a, b) => a.x - b.x)
+          .map((p2) => p2.texto)
+          .join(' ')
+          .replace(/\s+/g, ' ')
+          .trim()
+        if (linha) linhas.push(linha)
+      })
+  }
+
+  await doc.destroy()
+  return linhas
+}
+
+const MESES_PT = {
+  jan: 1, fev: 2, mar: 3, abr: 4, mai: 5, jun: 6,
+  jul: 7, ago: 8, set: 9, out: 10, nov: 11, dez: 12
+}
+
+/** Linhas que são cabeçalho, rodapé ou propaganda — nunca lançamento. */
+const RUIDO = /^(fatura|cart[aã]o|limite|total|resumo|pagamento m[ií]nimo|vencimento|saldo|per[ií]odo|encargos previstos|central de|ouvidoria|sac |demonstrativo|lan[cç]amentos (nacionais|internacionais)|data\s+(descri|hist)|p[aá]gina|www\.|cnpj|banco |ag[eê]ncia|conta )/i
+
+/**
+ * Interpreta as linhas de uma fatura de cartão brasileira.
+ *
+ * Formatos cobertos:
+ *   12/08  SUPERMERCADO SAO JORGE          352,90
+ *   12/08/2026  POSTO IPIRANGA             120,55
+ *   12 AGO  NETFLIX.COM                     55,90
+ *   05/09  MAGAZINE LUIZA 03/10           1.250,00
+ *   10/08  PAGAMENTO EFETUADO             -890,00
+ *
+ * Parcelas viram installment_no e installment_total. Valores negativos,
+ * ou linhas de pagamento e estorno, entram como crédito.
+ */
+export function parseInvoiceLines(linhas, { year, closingMonth } = {}) {
+  const rows = []
+  const avisos = []
+  const anoBase = year || new Date().getFullYear()
+
+  const REGEX_LINHA = new RegExp(
+    '^(\\d{1,2})[\\/\\s.-]([a-zA-Zç]{3}|\\d{1,2})(?:[\\/\\s.-](\\d{2,4}))?\\s+' +  // data
+    '(.+?)\\s+' +                                                                  // descrição
+    '(-?\\s*R?\\$?\\s*[\\d.]+,\\d{2})' +                                           // valor
+    '\\s*(-|C|CR|D)?$',                                                            // sinal ao final
+    'i'
+  )
+
+  linhas.forEach((linha) => {
+    const limpa = linha.replace(/\s+/g, ' ').trim()
+    if (limpa.length < 8) return
+    if (RUIDO.test(limpa)) return
+
+    const m = REGEX_LINHA.exec(limpa)
+    if (!m) return
+
+    const [, dia, mesBruto, anoBruto, descricaoBruta, valorBruto, sufixo] = m
+
+    let mes
+    if (/^\d+$/.test(mesBruto)) {
+      mes = parseInt(mesBruto, 10)
+    } else {
+      mes = MESES_PT[mesBruto.slice(0, 3).toLowerCase()]
+    }
+    if (!mes || mes < 1 || mes > 12) return
+
+    const d = parseInt(dia, 10)
+    if (d < 1 || d > 31) return
+
+    let ano = anoBruto ? parseInt(anoBruto, 10) : anoBase
+    if (ano < 100) ano += 2000
+    // Compra de dezembro numa fatura de janeiro pertence ao ano anterior.
+    if (!anoBruto && closingMonth && mes > closingMonth + 1) ano -= 1
+
+    let descricao = descricaoBruta.trim()
+    let parcela = null
+    let parcelaTotal = null
+
+    const mParcela = /\b(\d{1,2})\s*[\/de]{1,2}\s*(\d{1,2})\s*$/i.exec(descricao)
+    if (mParcela) {
+      const a = parseInt(mParcela[1], 10)
+      const b = parseInt(mParcela[2], 10)
+      if (b > 1 && a <= b && b <= 48) {
+        parcela = a
+        parcelaTotal = b
+        descricao = descricao.slice(0, mParcela.index).trim()
+      }
+    }
+
+    descricao = descricao.replace(/\s{2,}/g, ' ').replace(/[-–]\s*$/, '').trim()
+    if (!descricao || descricao.length < 2) return
+
+    let valor = parseMoney(valorBruto)
+    if (!Number.isFinite(valor) || valor === 0) return
+
+    const ehCredito =
+      valor < 0 ||
+      sufixo === '-' ||
+      /^(C|CR)$/i.test(sufixo || '') ||
+      /pagamento|estorno|cr[eé]dito|devolu[cç][aã]o|desconto/i.test(descricao)
+
+    rows.push({
+      date: `${ano}-${String(mes).padStart(2, '0')}-${String(d).padStart(2, '0')}`,
+      description: descricao,
+      amount: ehCredito ? Math.abs(valor) : -Math.abs(valor),
+      kind: ehCredito ? 'income' : 'expense',
+      installment_no: parcela,
+      installment_total: parcelaTotal
+    })
+  })
+
+  if (!rows.length) {
+    avisos.push('Nenhum lançamento reconhecido. O PDF pode ser digitalizado (imagem) em vez de texto.')
+  }
+
+  return { rows, warnings: avisos, fileType: 'pdf' }
+}
+
+/** Descobre o total e o vencimento declarados na fatura, para conferência. */
+export function invoiceSummary(linhas) {
+  let total = null
+  let vencimento = null
+
+  linhas.forEach((linha) => {
+    if (total == null) {
+      const m = /(total\s+(?:da\s+)?fatura|valor\s+total|total\s+a\s+pagar)\D{0,20}([\d.]+,\d{2})/i.exec(linha)
+      if (m) total = parseMoney(m[2])
+    }
+    if (vencimento == null) {
+      const m = /vencimento\D{0,20}(\d{2})\/(\d{2})\/(\d{2,4})/i.exec(linha)
+      if (m) {
+        let ano = parseInt(m[3], 10)
+        if (ano < 100) ano += 2000
+        vencimento = `${ano}-${m[2]}-${m[1]}`
+      }
+    }
+  })
+
+  return { total, vencimento }
+}
+
 export function fingerprint({ target, date, amount, description, externalId, index = 0 }) {
   const core = externalId
     ? `${target}|${externalId}`
